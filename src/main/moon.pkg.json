@@ -1,0 +1,4 @@
+{
+  "is-main": true,
+  "import": ["echozyr2001/m_moon/lexer", "echozyr2001/m_moon/parser"]
+}

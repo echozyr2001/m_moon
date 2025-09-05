@@ -158,6 +158,18 @@ fn compile(
       if verbose {
         println("语义分析通过")
       }
+
+      // 代码生成
+      if verbose {
+        println("代码生成...")
+      }
+      let assembly_code = @codegen.generate_riscv_assembly(program)
+      if write_debug {
+        write_debug_file(filename + ".s", assembly_code)
+      }
+      if verbose {
+        println("生成RISC-V汇编代码")
+      }
       let stats = CompileStats::{
         tokens_count: tokens.length(),
         declarations_count: program.declarations.length(),

@@ -515,13 +515,28 @@ fn parse_block_expr(self : Parser) -> @ast.Expr? {
   let stmts = []
   let mut final_expr = None
   while self.current_token() != RCurlyBracket && self.current_token() != EOF {
-    // 暂时先只支持表达式，语句解析稍后添加
-    match self.parse_expr() {
-      Some(expr) => {
-        final_expr = Some(expr)
-        break
+    // 保存当前位置，用于回溯
+    let saved_pos = self.position
+
+    // 先尝试解析语句
+    match self.parse_stmt() {
+      Some(stmt) => {
+        stmts.push(stmt)
+        continue
       }
-      None => return None
+      None => {
+        // 回溯到保存的位置
+        self.position = saved_pos
+
+        // 尝试解析表达式作为最终表达式
+        match self.parse_expr() {
+          Some(expr) => {
+            final_expr = Some(expr)
+            break
+          }
+          None => return None
+        }
+      }
     }
   }
   if self.expect_token(RCurlyBracket) {
@@ -651,6 +666,286 @@ fn parse_param(self : Parser) -> (String, @ast.Type)? {
       } else {
         None
       }
+    }
+    _ => None
+  }
+}
+
+///|
+fn parse_stmt(self : Parser) -> @ast.Stmt? {
+  match self.current_token() {
+    Let => self.parse_let_stmt()
+    While => self.parse_while_stmt()
+    Return => self.parse_return_stmt()
+    Fn => self.parse_fn_decl_stmt()
+    @lexer.Identifier(_) => {
+      // 可能是赋值语句或表达式语句
+      // 先尝试解析为赋值语句，如果失败则作为表达式语句
+      let saved_pos = self.position
+      match self.parse_assign_stmt() {
+        Some(stmt) => Some(stmt)
+        None => {
+          self.position = saved_pos
+          match self.parse_expr() {
+            Some(expr) =>
+              if self.expect_token(Semicolon) {
+                Some(@ast.ExprStmt(expr))
+              } else {
+                None
+              }
+            None => None
+          }
+        }
+      }
+    }
+    _ =>
+      // 尝试解析表达式语句
+      match self.parse_expr() {
+        Some(expr) =>
+          if self.expect_token(Semicolon) {
+            Some(@ast.ExprStmt(expr))
+          } else {
+            None
+          }
+        None => None
+      }
+  }
+}
+
+///|
+fn parse_let_stmt(self : Parser) -> @ast.Stmt? {
+  if !self.expect_token(Let) {
+    return None
+  }
+
+  // 检查是否是元组解构
+  if self.current_token() == LParen {
+    self.advance_parser()
+    let names = []
+    match self.current_token() {
+      @lexer.Identifier(name) => {
+        names.push(name)
+        self.advance_parser()
+        while self.current_token() == Comma {
+          self.advance_parser()
+          match self.current_token() {
+            @lexer.Identifier(name) => {
+              names.push(name)
+              self.advance_parser()
+            }
+            _ => return None
+          }
+        }
+        if !self.expect_token(RParen) {
+          return None
+        }
+        let type_annotation = if self.current_token() == Colon {
+          self.advance_parser()
+          self.parse_type()
+        } else {
+          None
+        }
+        if self.expect_token(Assign) {
+          match self.parse_expr() {
+            Some(expr) =>
+              if self.expect_token(Semicolon) {
+                Some(@ast.LetTupleStmt(names, type_annotation, expr))
+              } else {
+                None
+              }
+            None => None
+          }
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+  } else {
+    // 普通let语句
+    let is_mut = if self.current_token() == Mut {
+      self.advance_parser()
+      true
+    } else {
+      false
+    }
+    match self.current_token() {
+      @lexer.Identifier(name) => {
+        self.advance_parser()
+        let type_annotation = if self.current_token() == Colon {
+          self.advance_parser()
+          self.parse_type()
+        } else {
+          None
+        }
+        if self.expect_token(Assign) {
+          match self.parse_expr() {
+            Some(expr) =>
+              if self.expect_token(Semicolon) {
+                Some(@ast.LetStmt(name, type_annotation, expr, is_mut))
+              } else {
+                None
+              }
+            None => None
+          }
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+  }
+}
+
+///|
+fn parse_while_stmt(self : Parser) -> @ast.Stmt? {
+  if !self.expect_token(While) {
+    return None
+  }
+  match self.parse_expr() {
+    Some(condition) =>
+      if self.expect_token(LCurlyBracket) {
+        let stmts = []
+        while self.current_token() != RCurlyBracket &&
+              self.current_token() != EOF {
+          match self.parse_stmt() {
+            Some(stmt) => stmts.push(stmt)
+            None => return None
+          }
+        }
+        if self.expect_token(RCurlyBracket) {
+          Some(@ast.WhileStmt(condition, stmts))
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    None => None
+  }
+}
+
+///|
+fn parse_return_stmt(self : Parser) -> @ast.Stmt? {
+  if !self.expect_token(Return) {
+    return None
+  }
+  let expr = if self.current_token() == Semicolon {
+    None
+  } else {
+    self.parse_expr()
+  }
+  if self.expect_token(Semicolon) {
+    Some(@ast.ReturnStmt(expr))
+  } else {
+    None
+  }
+}
+
+///|
+fn parse_fn_decl_stmt(self : Parser) -> @ast.Stmt? {
+  if !self.expect_token(Fn) {
+    return None
+  }
+  match self.current_token() {
+    @lexer.Identifier(name) => {
+      self.advance_parser()
+      if self.expect_token(LParen) {
+        let params = []
+        if self.current_token() != RParen {
+          match self.parse_nontop_param() {
+            Some(param) => {
+              params.push(param)
+              while self.current_token() == Comma {
+                self.advance_parser()
+                match self.parse_nontop_param() {
+                  Some(param) => params.push(param)
+                  None => return None
+                }
+              }
+            }
+            None => return None
+          }
+        }
+        if self.expect_token(RParen) {
+          let return_type = if self.current_token() == Arrow {
+            self.advance_parser()
+            self.parse_type()
+          } else {
+            None
+          }
+          match self.parse_block_expr() {
+            Some(body) => Some(@ast.FnDeclStmt(name, params, return_type, body))
+            None => None
+          }
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn parse_nontop_param(self : Parser) -> (String, @ast.Type?)? {
+  match self.current_token() {
+    @lexer.Identifier(name) => {
+      self.advance_parser()
+      let type_annotation = if self.current_token() == Colon {
+        self.advance_parser()
+        self.parse_type()
+      } else {
+        None
+      }
+      Some((name, type_annotation))
+    }
+    _ => None
+  }
+}
+
+///|
+fn parse_assign_stmt(self : Parser) -> @ast.Stmt? {
+  match self.parse_left_value() {
+    Some(left_value) =>
+      if self.expect_token(Assign) {
+        match self.parse_expr() {
+          Some(expr) =>
+            if self.expect_token(Semicolon) {
+              Some(@ast.AssignStmt(left_value, expr))
+            } else {
+              None
+            }
+          None => None
+        }
+      } else {
+        None
+      }
+    None => None
+  }
+}
+
+///|
+fn parse_left_value(self : Parser) -> @ast.LeftValue? {
+  match self.current_token() {
+    @lexer.Identifier(name) => {
+      self.advance_parser()
+      let mut result = @ast.Variable(name)
+      while self.current_token() == LBracket {
+        self.advance_parser()
+        match self.parse_expr() {
+          Some(index) =>
+            if self.expect_token(RBracket) {
+              result = @ast.ArrayAccess(result, index)
+            } else {
+              return None
+            }
+          None => return None
+        }
+      }
+      Some(result)
     }
     _ => None
   }

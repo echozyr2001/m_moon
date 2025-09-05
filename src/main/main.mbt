@@ -2,11 +2,12 @@
 /// MiniMoonBit 编译器主程序
 fn main {
   let verbose = @ref.new(false)
-  let files = []
+  let file = @ref.new("")
   let input = @ref.new("")
   let write_debug = @ref.new(false)
   let show_tokens = @ref.new(false)
   let show_ast = @ref.new(false)
+  let show_semantic = @ref.new(false)
   let usage = "MiniMoonBit Compiler\nUsage: minimoonbit [options] <input_file>"
 
   // 获取命令行参数，跳过第一个参数
@@ -27,12 +28,31 @@ fn main {
       ("--debug", "-d", Set(write_debug), "write debug files"),
       ("--show-tokens", "", Set(show_tokens), "display token list"),
       ("--show-ast", "", Set(show_ast), "display AST structure"),
+      (
+        "--show-semantic",
+        "",
+        Set(show_semantic),
+        "display semantic analysis results",
+      ),
     ],
-    file => files.push(file),
+    res_file => file.val = res_file,
     usage,
     actual_args,
   )
-  let (source_code, filename) = get_input_source(input.val, files)
+  let (source_code, filename) = match get_input_source(input.val, file.val) {
+    Ok((code, name)) => (code, name)
+    Err(error) => {
+      if error == "未指定输入文件" {
+        println("错误: " + error)
+        println(
+          "MiniMoonBit Compiler\nUsage: minimoonbit [options] <input_file>",
+        )
+      } else {
+        println("编译失败: " + error)
+      }
+      return
+    }
+  }
   if verbose.val {
     println("=== MiniMoonBit 编译器 ===")
     println("源文件: " + filename)
@@ -45,6 +65,7 @@ fn main {
       write_debug.val,
       show_tokens.val,
       show_ast.val,
+      show_semantic.val,
     ) {
     Ok(stats) => {
       println("编译成功!")
@@ -65,6 +86,7 @@ fn compile(
   write_debug : Bool,
   show_tokens : Bool,
   show_ast : Bool,
+  show_semantic : Bool,
 ) -> Result[CompileStats, String] {
   // 词法分析
   if verbose {
@@ -102,9 +124,44 @@ fn compile(
           " 个声明",
         )
       }
+
+      // 语义分析
+      if verbose {
+        println("语义分析...")
+      }
+      let semantic_result = @semantic.analyze_program(program)
+      if semantic_result.errors.length() > 0 {
+        if show_semantic {
+          display_semantic_errors(semantic_result.errors)
+        }
+        if write_debug {
+          write_debug_file(
+            filename + ".semantic",
+            format_semantic_errors(semantic_result.errors),
+          )
+        }
+        return Err(
+          "语义分析失败: " +
+          semantic_result.errors.length().to_string() +
+          " 个错误",
+        )
+      }
+      if show_semantic {
+        display_semantic_result(semantic_result)
+      }
+      if write_debug {
+        write_debug_file(
+          filename + ".semantic",
+          "语义分析通过，无错误",
+        )
+      }
+      if verbose {
+        println("语义分析通过")
+      }
       let stats = CompileStats::{
         tokens_count: tokens.length(),
         declarations_count: program.declarations.length(),
+        semantic_errors: semantic_result.errors.length(),
       }
       Ok(stats)
     }
@@ -116,26 +173,20 @@ fn compile(
 /// 获取输入源代码
 fn get_input_source(
   input_file : String,
-  files : Array[String],
-) -> (String, String) {
+  file : String,
+) -> Result[(String, String), String] {
   if input_file != "" {
     match read_file(input_file) {
-      Ok(code) => (code, input_file)
-      Err(error) => {
-        println("读取文件失败: " + error)
-        abort("文件读取错误")
-      }
+      Ok(code) => Ok((code, input_file))
+      Err(error) => Err("读取文件失败: " + error)
     }
-  } else if files.length() > 0 {
-    match read_file(files[0]) {
-      Ok(code) => (code, files[0])
-      Err(error) => {
-        println("读取文件失败: " + error)
-        abort("文件读取错误")
-      }
+  } else if file != "" {
+    match read_file(file) {
+      Ok(code) => Ok((code, file))
+      Err(error) => Err("读取文件失败: " + error)
     }
   } else {
-    abort("没有指定输入文件")
+    Err("未指定输入文件")
   }
 }
 
@@ -195,6 +246,7 @@ fn write_debug_file(filename : String, content : String) -> Unit {
 struct CompileStats {
   tokens_count : Int
   declarations_count : Int
+  semantic_errors : Int
 } derive(Show)
 
 ///|
@@ -280,4 +332,37 @@ fn format_declaration(decl : @ast.TopLevel, indent : String) -> String {
       "  value: " +
       expr.to_string()
   }
+}
+
+///|
+/// 显示语义分析错误
+fn display_semantic_errors(errors : Array[String]) -> Unit {
+  println("=== 语义分析错误 ===")
+  println("错误数量: " + errors.length().to_string())
+  println("")
+  for i = 0; i < errors.length(); i = i + 1 {
+    println("[" + (i + 1).to_string() + "] " + errors[i])
+  }
+}
+
+///|
+/// 显示语义分析结果
+fn display_semantic_result(result : @semantic.SemanticResult) -> Unit {
+  if result.errors.length() == 0 {
+    println("=== 语义分析结果 ===")
+    println("语义分析通过，无错误")
+  } else {
+    display_semantic_errors(result.errors)
+  }
+}
+
+///|
+/// 格式化语义错误用于文件输出
+fn format_semantic_errors(errors : Array[String]) -> String {
+  let mut content = "语义分析错误报告\n"
+  content = content + "错误数量: " + errors.length().to_string() + "\n\n"
+  for i = 0; i < errors.length(); i = i + 1 {
+    content = content + "[" + (i + 1).to_string() + "] " + errors[i] + "\n"
+  }
+  content
 }

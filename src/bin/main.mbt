@@ -4,6 +4,8 @@ fn main {
   let verbose = @ref.new(false)
   let file = @ref.new("")
   let input = @ref.new("")
+  let output = @ref.new("")
+  let typecheck_only = @ref.new(false)
   let write_debug = @ref.new(false)
   let show_tokens = @ref.new(false)
   let show_ast = @ref.new(false)
@@ -25,6 +27,8 @@ fn main {
     [
       ("--verbose", "-v", Set(verbose), "enable verbose output"),
       ("--input", "-i", Set_string(input), "input file name"),
+      ("--output", "-o", Set_string(output), "output file name"),
+      ("--typecheck", "", Set(typecheck_only), "only perform type checking"),
       ("--debug", "-d", Set(write_debug), "write debug files"),
       ("--show-tokens", "", Set(show_tokens), "display token list"),
       ("--show-ast", "", Set(show_ast), "display AST structure"),
@@ -61,6 +65,8 @@ fn main {
     compile(
       source_code,
       filename,
+      output.val,
+      typecheck_only.val,
       verbose.val,
       write_debug.val,
       show_tokens.val,
@@ -68,12 +74,19 @@ fn main {
       show_semantic.val,
     ) {
     Ok(stats) => {
-      println("编译成功!")
+      if typecheck_only.val {
+        println("类型检查通过!")
+      } else {
+        println("编译成功!")
+      }
       if verbose.val {
         println(stats.to_string())
       }
     }
-    Err(error) => println("编译失败: " + error)
+    Err(error) => {
+      println("编译失败: " + error)
+      @sys.exit(1)
+    }
   }
 }
 
@@ -82,6 +95,8 @@ fn main {
 fn compile(
   source : String,
   filename : String,
+  output_file : String,
+  typecheck_only : Bool,
   verbose : Bool,
   write_debug : Bool,
   show_tokens : Bool,
@@ -159,16 +174,36 @@ fn compile(
         println("语义分析通过")
       }
 
+      // 如果只是类型检查，在这里返回
+      if typecheck_only {
+        let stats = CompileStats::{
+          tokens_count: tokens.length(),
+          declarations_count: program.declarations.length(),
+          semantic_errors: semantic_result.errors.length(),
+        }
+        return Ok(stats)
+      }
+
       // 代码生成
       if verbose {
         println("代码生成...")
       }
       let assembly_code = @codegen.generate_riscv_assembly(program)
+
+      // 确定输出文件名
+      let final_output_file = if output_file != "" {
+        output_file
+      } else {
+        filename + ".s"
+      }
+
+      // 写入输出文件
+      write_output_file(final_output_file, assembly_code)
       if write_debug {
         write_debug_file(filename + ".s", assembly_code)
       }
       if verbose {
-        println("生成RISC-V汇编代码")
+        println("生成RISC-V汇编代码: " + final_output_file)
       }
       let stats = CompileStats::{
         tokens_count: tokens.length(),
@@ -243,6 +278,17 @@ fn format_ast_for_file(program : @ast.Program) -> String {
       "\n"
   }
   content
+}
+
+///|
+/// 写入输出文件
+fn write_output_file(filename : String, content : String) -> Unit {
+  @fs.write_string_to_file(filename, content) catch {
+    error => {
+      println("写入输出文件失败: " + error.to_string())
+      @sys.exit(1)
+    }
+  }
 }
 
 ///|

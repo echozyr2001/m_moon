@@ -1,9 +1,9 @@
 {
   "is-main": true,
   "import": [
+    "echozyr2001/m_moon/ast",
     "echozyr2001/m_moon/lexer",
     "echozyr2001/m_moon/parser",
-    "echozyr2001/m_moon/ast",
     "echozyr2001/m_moon/semantic",
     "echozyr2001/m_moon/codegen",
     "Yoorkin/ArgParser",

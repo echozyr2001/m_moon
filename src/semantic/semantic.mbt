@@ -22,6 +22,7 @@ pub enum Type {
   Unit
   Array(Type)
   Function(Array[Type], Type) // 参数类型列表, 返回类型
+  UserDefinedType(String) // 用户定义类型
 } derive(Eq, Show)
 
 ///|
@@ -42,11 +43,17 @@ pub struct SemanticResult {
 /// 创建新的语义分析器
 pub fn SemanticAnalyzer::new() -> SemanticAnalyzer {
   let global_scope = Scope::{ variables: Map::new(), functions: Map::new() }
-  SemanticAnalyzer::{
+  let analyzer = SemanticAnalyzer::{
     scopes: [global_scope],
     current_function: None,
     errors: [],
   }
+  // 添加内置函数
+  analyzer.scopes[0].functions.set("print_int", FunctionType::{
+    params: [Int],
+    return_type: Unit,
+  })
+  analyzer
 }
 
 ///|
@@ -65,7 +72,20 @@ fn analyze_program_internal(
   self : SemanticAnalyzer,
   program : @ast.Program,
 ) -> Unit {
-  // 第一遍：收集所有函数声明
+  // 第一遍：收集所有结构体和枚举声明
+  for decl in program.declarations {
+    match decl {
+      @ast.StructDecl(name, _generic_param, _fields) =>
+        // 将结构体类型添加到全局作用域
+        self.scopes[0].variables.set(name, UserDefinedType(name))
+      @ast.EnumDecl(name, _generic_param, _variants) =>
+        // 将枚举类型添加到全局作用域
+        self.scopes[0].variables.set(name, UserDefinedType(name))
+      _ => ()
+    }
+  }
+
+  // 第二遍：收集所有函数声明
   for decl in program.declarations {
     match decl {
       @ast.TopFnDecl(_generic_param, name, params, return_type, _) => {
@@ -81,17 +101,11 @@ fn analyze_program_internal(
         let func_type = FunctionType::{ params: [], return_type: Unit }
         self.scopes[0].functions.set("main", func_type)
       }
-      @ast.StructDecl(_, _, _) =>
-        // 结构体声明不需要类型检查
-        ()
-      @ast.EnumDecl(_, _, _) =>
-        // 枚举声明不需要类型检查
-        ()
       _ => ()
     }
   }
 
-  // 第二遍：分析函数体和顶层声明
+  // 第三遍：分析函数体和顶层声明
   for decl in program.declarations {
     self.analyze_declaration(decl)
   }
@@ -446,12 +460,12 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
       }
       Array(first_type)
     }
-    @ast.StructConstruct(_struct_name, fields) => {
-      // 简化处理：假设结构体构造返回Unit类型
+    @ast.StructConstruct(struct_name, fields) => {
+      // 分析结构体构造，返回对应的用户定义类型
       for field in fields {
         ignore(self.analyze_expression(field.1))
       }
-      Unit
+      UserDefinedType(struct_name)
     }
     @ast.EnumConstruct(_type_name, _variant_name, args) => {
       // 简化处理：假设枚举构造返回Unit类型
@@ -471,8 +485,14 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
     }
     @ast.FieldAccess(target, _field_name) => {
       // 简化处理：假设字段访问返回Int类型
-      ignore(self.analyze_expression(target))
-      Int
+      let target_type = self.analyze_expression(target)
+      match target_type {
+        UserDefinedType(_) => Int // 假设结构体字段都是Int类型
+        _ => {
+          self.add_error("只能对结构体类型进行字段访问")
+          Unit
+        }
+      }
     }
     @ast.FunctionExpr(params, return_type, body) => {
       // 函数表达式：分析函数体并返回函数类型
@@ -617,9 +637,15 @@ fn ast_type_to_type(self : SemanticAnalyzer, ast_type : @ast.Type) -> Type {
       let ret_type = self.ast_type_to_type(return_type)
       Function(param_types, ret_type)
     }
-    @ast.UserDefinedType(_name) =>
-      // 简化处理：假设用户定义类型为Int
-      Int
+    @ast.UserDefinedType(name) =>
+      // 查找用户定义类型
+      match self.lookup_variable(name) {
+        Some(t) => t
+        None => {
+          self.add_error("未定义的类型: " + name)
+          Unit
+        }
+      }
     @ast.GenericType(_name, _inner_type) =>
       // 简化处理：假设泛型类型为Int
       Int

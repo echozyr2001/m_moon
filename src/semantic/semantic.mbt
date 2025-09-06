@@ -311,7 +311,7 @@ fn analyze_left_value(self : SemanticAnalyzer, lvalue : @ast.LeftValue) -> Type 
       Int
     }
   }
-} ///|
+}
 
 ///|
 /// 分析表达式
@@ -703,5 +703,5 @@ fn add_error(self : SemanticAnalyzer, message : String) -> Unit {
 /// 公共接口：分析程序
 pub fn analyze_program(program : @ast.Program) -> SemanticResult {
   let analyzer = SemanticAnalyzer::new()
-  analyzer.analyze(program)
+  SemanticAnalyzer::analyze(analyzer, program)
 }

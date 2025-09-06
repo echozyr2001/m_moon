@@ -54,7 +54,8 @@ fn main {
       } else {
         println("编译失败: " + error)
       }
-      panic()
+      @sys.exit(1)
+      ("", "") // This line will never be reached, but satisfies the type checker
     }
   }
   if verbose.val {
@@ -85,7 +86,7 @@ fn main {
     }
     Err(error) => {
       println("编译失败: " + error)
-      panic()
+      @sys.exit(1)
     }
   }
 }
@@ -294,7 +295,7 @@ fn write_output_file(filename : String, content : String) -> Unit {
   @fs.write_string_to_file(filename, content) catch {
     error => {
       println("写入输出文件失败: " + error.to_string())
-      panic()
+      @sys.exit(1)
     }
   }
 }

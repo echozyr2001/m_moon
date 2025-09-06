@@ -6,6 +6,7 @@
     "echozyr2001/m_moon/parser",
     "echozyr2001/m_moon/semantic",
     "echozyr2001/m_moon/codegen",
+    "Kaida-Amethyst/mbtsmith",
     "Yoorkin/ArgParser",
     "moonbitlang/x/sys",
     "moonbitlang/x/fs"

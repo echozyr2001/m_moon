@@ -122,7 +122,16 @@ fn keyword_or_identifier(word : String) -> Token {
     "while" => While
     "return" => Return
     "main" => Main
-    _ => Identifier(word)
+    "struct" => Struct
+    "enum" => Enum
+    "match" => Match
+    _ =>
+      // 检查是否是大写开头的标识符
+      if word.length() > 0 && word[0] >= 'A' && word[0] <= 'Z' {
+        UpperIdentifier(word)
+      } else {
+        Identifier(word)
+      }
   }
 }
 
@@ -196,7 +205,11 @@ pub fn next_token(self : Lexer) -> TokenWithPos {
         TokenWithPos::{ token: Minus, pos }
       }
     Some('=') =>
-      if self.peek_char(1) == Some('=') {
+      if self.peek_char(1) == Some('>') {
+        self.advance()
+        self.advance()
+        TokenWithPos::{ token: MatchArrow, pos }
+      } else if self.peek_char(1) == Some('=') {
         self.advance()
         self.advance()
         TokenWithPos::{ token: Equal, pos }
@@ -271,6 +284,10 @@ pub fn next_token(self : Lexer) -> TokenWithPos {
       } else {
         TokenWithPos::{ token: Number(num), pos }
       }
+    }
+    Some('_') => {
+      self.advance()
+      TokenWithPos::{ token: Wildcard, pos }
     }
     Some(c) if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' => {
       let word = self.read_identifier()

@@ -68,7 +68,7 @@ fn analyze_program_internal(
   // 第一遍：收集所有函数声明
   for decl in program.declarations {
     match decl {
-      @ast.TopFnDecl(name, params, return_type, _) => {
+      @ast.TopFnDecl(_generic_param, name, params, return_type, _) => {
         let param_types = params.map(fn(p) { self.ast_type_to_type(p.1) })
         let ret_type = self.ast_type_to_type(return_type)
         let func_type = FunctionType::{
@@ -81,6 +81,12 @@ fn analyze_program_internal(
         let func_type = FunctionType::{ params: [], return_type: Unit }
         self.scopes[0].functions.set("main", func_type)
       }
+      @ast.StructDecl(_, _, _) =>
+        // 结构体声明不需要类型检查
+        ()
+      @ast.EnumDecl(_, _, _) =>
+        // 枚举声明不需要类型检查
+        ()
       _ => ()
     }
   }
@@ -95,7 +101,7 @@ fn analyze_program_internal(
 /// 分析声明
 fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
   match decl {
-    @ast.TopFnDecl(name, params, return_type, body) => {
+    @ast.TopFnDecl(_generic_param, name, params, return_type, body) => {
       self.current_function = Some(name)
       self.push_scope()
 
@@ -119,6 +125,12 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
       self.pop_scope()
       self.current_function = None
     }
+    @ast.StructDecl(_, _, _) =>
+      // 结构体声明不需要类型检查
+      ()
+    @ast.EnumDecl(_, _, _) =>
+      // 枚举声明不需要类型检查
+      ()
     @ast.MainFnDecl(body) => {
       self.current_function = Some("main")
       self.push_scope()
@@ -140,6 +152,17 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
       }
       self.add_variable(name, expected_type)
     }
+    @ast.TopLetWildcardDecl(type_annotation, expr) => {
+      let expr_type = self.analyze_expression(expr)
+      let expected_type = match type_annotation {
+        Some(t) => self.ast_type_to_type(t)
+        None => expr_type
+      }
+      if not(self.types_compatible(expr_type, expected_type)) {
+        self.add_error("通配符 let 语句类型不匹配")
+      }
+      // 通配符不需要添加到符号表中
+    }
   }
 }
 
@@ -148,14 +171,33 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
 fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
   match stmt {
     @ast.ExprStmt(expr) => self.analyze_expression(expr)
-    @ast.LetStmt(name, type_annotation, expr, _) => {
+    @ast.LetStmt(binding, type_annotation, expr) => {
+      let expr_type = self.analyze_expression(expr)
+      let expected_type = match type_annotation {
+        Some(t) => self.ast_type_to_type(t)
+        None => expr_type
+      }
+      match binding {
+        @ast.Binding::Variable(name) => {
+          if not(self.types_compatible(expr_type, expected_type)) {
+            self.add_error("变量 '" + name + "' 类型不匹配")
+          }
+          self.add_variable(name, expected_type)
+        }
+        @ast.Binding::Wildcard =>
+          // 通配符不需要类型检查
+          ()
+      }
+      Unit
+    }
+    @ast.LetMutStmt(name, type_annotation, expr) => {
       let expr_type = self.analyze_expression(expr)
       let expected_type = match type_annotation {
         Some(t) => self.ast_type_to_type(t)
         None => expr_type
       }
       if not(self.types_compatible(expr_type, expected_type)) {
-        self.add_error("变量 '" + name + "' 类型不匹配")
+        self.add_error("可变变量 '" + name + "' 类型不匹配")
       }
       self.add_variable(name, expected_type)
       Unit
@@ -221,11 +263,16 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
       self.pop_scope()
       Unit
     }
-    @ast.LetTupleStmt(names, _type_annotation, expr) => {
+    @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
       ignore(self.analyze_expression(expr))
       // 简化处理：假设所有变量都是Unit类型
-      for name in names {
-        self.add_variable(name, Unit)
+      for binding in bindings {
+        match binding {
+          @ast.Binding::Variable(name) => self.add_variable(name, Unit)
+          @ast.Binding::Wildcard =>
+            // 通配符不需要添加到作用域
+            ()
+        }
       }
       Unit
     }
@@ -257,6 +304,11 @@ fn analyze_left_value(self : SemanticAnalyzer, lvalue : @ast.LeftValue) -> Type 
           Unit
         }
       }
+    }
+    @ast.FieldAccess(target, _field_name) => {
+      // 简化处理：假设字段访问返回Int类型
+      ignore(self.analyze_left_value(target))
+      Int
     }
   }
 } ///|
@@ -394,6 +446,77 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
       }
       Array(first_type)
     }
+    @ast.StructConstruct(_struct_name, fields) => {
+      // 简化处理：假设结构体构造返回Unit类型
+      for field in fields {
+        ignore(self.analyze_expression(field.1))
+      }
+      Unit
+    }
+    @ast.EnumConstruct(_type_name, _variant_name, args) => {
+      // 简化处理：假设枚举构造返回Unit类型
+      for arg in args {
+        ignore(self.analyze_expression(arg))
+      }
+      Unit
+    }
+    @ast.MatchExpr(expr, arms) => {
+      let _expr_type = self.analyze_expression(expr)
+      // 简化处理：假设所有分支返回相同类型
+      if arms.length() > 0 {
+        self.analyze_expression(arms[0].expr)
+      } else {
+        Unit
+      }
+    }
+    @ast.FieldAccess(target, _field_name) => {
+      // 简化处理：假设字段访问返回Int类型
+      ignore(self.analyze_expression(target))
+      Int
+    }
+    @ast.FunctionExpr(params, return_type, body) => {
+      // 函数表达式：分析函数体并返回函数类型
+      self.push_scope()
+      // 添加参数到作用域
+      for param in params {
+        match param.1 {
+          Some(param_type) => {
+            let type_val = self.ast_type_to_type(param_type)
+            self.add_variable(param.0, type_val)
+          }
+          None =>
+            // 参数没有类型注解，假设为Int类型
+            self.add_variable(param.0, Int)
+        }
+      }
+      // 分析函数体
+      let _body_type = self.analyze_expression(body)
+      self.pop_scope()
+
+      // 返回函数类型
+      match return_type {
+        Some(rt) => {
+          let return_type_val = self.ast_type_to_type(rt)
+          let param_types = params.map(fn(p) {
+            match p.1 {
+              Some(t) => self.ast_type_to_type(t)
+              None => Int // 默认参数类型
+            }
+          })
+          Function(param_types, return_type_val)
+        }
+        None => {
+          // 没有返回类型注解，假设返回Unit
+          let param_types = params.map(fn(p) {
+            match p.1 {
+              Some(t) => self.ast_type_to_type(t)
+              None => Int // 默认参数类型
+            }
+          })
+          Function(param_types, Unit)
+        }
+      }
+    }
   }
 } ///|
 
@@ -494,6 +617,12 @@ fn ast_type_to_type(self : SemanticAnalyzer, ast_type : @ast.Type) -> Type {
       let ret_type = self.ast_type_to_type(return_type)
       Function(param_types, ret_type)
     }
+    @ast.UserDefinedType(_name) =>
+      // 简化处理：假设用户定义类型为Int
+      Int
+    @ast.GenericType(_name, _inner_type) =>
+      // 简化处理：假设泛型类型为Int
+      Int
   }
 } ///|
 

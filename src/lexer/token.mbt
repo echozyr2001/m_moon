@@ -18,10 +18,14 @@ pub(all) enum Token {
   While
   Return
   Main
+  Struct
+  Enum
+  Match
 
   // 字面量
   Number(Int)
   Identifier(String)
+  UpperIdentifier(String) // 大写开头的标识符
 
   // 比较操作符
   Equal // ==
@@ -52,11 +56,13 @@ pub(all) enum Token {
   LCurlyBracket // {
   RCurlyBracket // }
   Arrow // ->
+  MatchArrow // =>
   Colon // :
   DoubleColon // ::
   Semicolon // ;
   Comma // ,
   Exclamation // !
+  Wildcard // _
 
   // 特殊
   EOF

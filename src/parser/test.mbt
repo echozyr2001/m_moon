@@ -24,7 +24,7 @@ test "parser" {
   inspect(
     result2,
     content=(
-      #|Some({declarations: [TopFnDecl("add", [("a", IntType), ("b", IntType)], IntType, BlockExpr([], Some(BinaryOp(Add, Identifier("a"), Identifier("b")))))]})
+      #|Some({declarations: [TopFnDecl(None, "add", [("a", IntType), ("b", IntType)], IntType, BlockExpr([], Some(BinaryOp(Add, Identifier("a"), Identifier("b")))))]})
     ),
   )
 

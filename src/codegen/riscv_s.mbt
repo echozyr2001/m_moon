@@ -62,7 +62,13 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.emit_line("  ret")
       self.emit_line("")
     }
-    @ast.TopFnDecl(name, params, _return_type, body) => {
+    @ast.StructDecl(_, _, _) =>
+      // 结构体声明不需要生成代码
+      ()
+    @ast.EnumDecl(_, _, _) =>
+      // 枚举声明不需要生成代码
+      ()
+    @ast.TopFnDecl(generic_param, name, params, _return_type, body) => {
       self.emit_line("minimbt_" + name + ":")
       self.emit_line("  # 保存返回地址和帧指针")
       self.emit_line("  addi sp, sp, -16")
@@ -93,6 +99,11 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.emit_line(".text")
       self.emit_line("")
     }
+    @ast.TopLetWildcardDecl(_type_annotation, _expr) =>
+      // 通配符全局 let 语句，不需要生成特殊的代码
+      // 只需要确保表达式被求值（如果它有副作用的话）
+      // 在简化的编译器中，我们可以忽略它
+      ()
   }
 }
 
@@ -353,17 +364,23 @@ fn generate_array_access(
 /// 生成语句
 fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
   match stmt {
-    @ast.LetStmt(name, _type_annotation, expr, _is_mut) => {
+    @ast.LetStmt(binding, _type_annotation, expr) => {
       // 计算表达式值
       self.generate_expression(expr)
+      match binding {
+        @ast.Binding::Variable(name) => {
+          // 分配栈空间并保存值
+          self.stack_offset = self.stack_offset - 8
+          self.emit_line("  addi sp, sp, -8")
+          self.emit_line("  sd a0, 0(sp)")
 
-      // 分配栈空间并保存值
-      self.stack_offset = self.stack_offset - 8
-      self.emit_line("  addi sp, sp, -8")
-      self.emit_line("  sd a0, 0(sp)")
-
-      // 记录变量位置
-      self.local_vars.set(name, self.stack_offset)
+          // 记录变量位置
+          self.local_vars.set(name, self.stack_offset)
+        }
+        @ast.Binding::Wildcard =>
+          // 通配符不需要存储
+          ()
+      }
     }
     @ast.AssignStmt(target, expr) => self.generate_assignment(target, expr)
     @ast.ExprStmt(expr) => self.generate_expression(expr)
@@ -375,6 +392,35 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       self.emit_line("  j function_return")
     }
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
+    @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
+      self.generate_expression(expr)
+      // 简化处理：为每个变量分配栈空间
+      for binding in bindings {
+        match binding {
+          @ast.Binding::Variable(name) => {
+            self.stack_offset = self.stack_offset - 8
+            self.emit_line("  addi sp, sp, -8")
+            self.emit_line("  sd a0, 0(sp)")
+            self.local_vars.set(name, self.stack_offset)
+          }
+          @ast.Binding::Wildcard =>
+            // 通配符不需要分配空间
+            ()
+        }
+      }
+    }
+    @ast.LetMutStmt(name, _type_annotation, expr) => {
+      // 计算表达式值
+      self.generate_expression(expr)
+
+      // 分配栈空间并保存值
+      self.stack_offset = self.stack_offset - 8
+      self.emit_line("  addi sp, sp, -8")
+      self.emit_line("  sd a0, 0(sp)")
+
+      // 记录变量位置
+      self.local_vars.set(name, self.stack_offset)
+    }
     _ => self.emit_line("  # 未实现的语句类型")
   }
 }
@@ -420,6 +466,16 @@ fn generate_assignment(
       self.emit_line("  slli a1, a1, 3")
       self.emit_line("  add a0, a0, a1")
       self.emit_line("  sd a2, 0(a0)")
+    }
+    @ast.FieldAccess(target, field_name) => {
+      // 简化处理：假设字段赋值
+      self.generate_expression(expr)
+      self.emit_line("  addi sp, sp, -8")
+      self.emit_line("  sd a0, 0(sp)")
+      self.generate_left_value_address(target)
+      self.emit_line("  ld a1, 0(sp)")
+      self.emit_line("  addi sp, sp, 8")
+      self.emit_line("  sd a1, 0(a0)")
     }
   }
 }
@@ -475,6 +531,11 @@ fn generate_left_value_address(
       self.emit_line("  addi sp, sp, 8")
       self.emit_line("  slli a1, a1, 3")
       self.emit_line("  add a0, a0, a1")
+    }
+    @ast.FieldAccess(target, field_name) => {
+      // 简化处理：假设字段访问
+      self.generate_left_value_address(target)
+      self.emit_line("  # 字段访问: " + field_name)
     }
   }
 }

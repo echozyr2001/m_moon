@@ -360,7 +360,7 @@ fn format_declaration(decl : @ast.TopLevel, indent : String) -> String {
   match decl {
     @ast.MainFnDecl(body) =>
       "MainFunction:\n" + indent + "  body: " + body.to_string()
-    @ast.TopFnDecl(generic_param, name, params, return_type, body) =>
+    @ast.TopFnDecl(_generic_param, name, params, return_type, body) =>
       "Function '" +
       name +
       "':\n" +
@@ -401,14 +401,14 @@ fn format_declaration(decl : @ast.TopLevel, indent : String) -> String {
       indent +
       "  value: " +
       expr.to_string()
-    @ast.StructDecl(name, generic_param, fields) =>
+    @ast.StructDecl(name, _generic_param, fields) =>
       "StructDeclaration '" +
       name +
       "':\n" +
       indent +
       "  fields: " +
       fields.to_string()
-    @ast.EnumDecl(name, generic_param, variants) =>
+    @ast.EnumDecl(name, _generic_param, variants) =>
       "EnumDeclaration '" +
       name +
       "':\n" +

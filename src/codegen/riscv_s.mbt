@@ -68,7 +68,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
     @ast.EnumDecl(_, _, _) =>
       // 枚举声明不需要生成代码
       ()
-    @ast.TopFnDecl(generic_param, name, params, _return_type, body) => {
+    @ast.TopFnDecl(_generic_param, name, params, _return_type, body) => {
       self.emit_line("minimbt_" + name + ":")
       self.emit_line("  # 保存返回地址和帧指针")
       self.emit_line("  addi sp, sp, -16")
@@ -467,7 +467,7 @@ fn generate_assignment(
       self.emit_line("  add a0, a0, a1")
       self.emit_line("  sd a2, 0(a0)")
     }
-    @ast.FieldAccess(target, field_name) => {
+    @ast.FieldAccess(target, _field_name) => {
       // 简化处理：假设字段赋值
       self.generate_expression(expr)
       self.emit_line("  addi sp, sp, -8")

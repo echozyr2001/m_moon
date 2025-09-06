@@ -1,13 +1,181 @@
 ///|
+/// 解析错误信息
+pub struct ParseError {
+  message : String
+  position : Int
+  expected : String
+  actual : String
+  context : String
+  source_lines : Array[String]
+  error_line : Int
+  error_column : Int
+} derive(Show, Eq)
+
+///|
 /// 语法分析器
 pub struct Parser {
   tokens : Array[@lexer.TokenWithPos]
   mut position : Int
+  mut last_error : ParseError?
+  source_lines : Array[String]
 }
 
 ///|
 pub fn Parser::new(tokens : Array[@lexer.TokenWithPos]) -> Parser {
-  { tokens, position: 0 }
+  // 从tokens中提取源码行信息
+  let source_lines = extract_source_lines_simple(tokens)
+  { tokens, position: 0, last_error: None, source_lines }
+}
+
+///|
+/// 从tokens中提取源码行信息（简化版本）
+fn extract_source_lines_simple(
+  tokens : Array[@lexer.TokenWithPos],
+) -> Array[String] {
+  if tokens.length() == 0 {
+    return []
+  }
+
+  // 找到最大行号
+  let max_line = tokens[tokens.length() - 1].pos.line
+  let lines = @ref.new([])
+
+  // 初始化所有行为空字符串
+  for i = 0; i < max_line; i = i + 1 {
+    lines.val = lines.val + [""]
+  }
+
+  // 填充每一行的内容
+  for i = 0; i < tokens.length(); i = i + 1 {
+    let token = tokens[i]
+    let line_index = token.pos.line - 1
+    if line_index < lines.val.length() {
+      let current_line = lines.val[line_index]
+      let token_str = token.token.to_string()
+      // 在tokens之间添加空格，但避免在特殊字符前后添加不必要的空格
+      let separator = if should_add_space_before(current_line, token_str) {
+        " "
+      } else {
+        ""
+      }
+      let new_line = current_line + separator + token_str
+      lines.val[line_index] = new_line
+    }
+  }
+  lines.val
+}
+
+///|
+/// 判断是否应该在token前添加空格
+fn should_add_space_before(current_line : String, token_str : String) -> Bool {
+  // 如果当前行为空，不需要添加空格
+  if current_line == "" {
+    return false
+  }
+
+  // 获取当前行的最后一个字符
+  let last_char = if current_line.length() > 0 {
+    current_line[current_line.length() - 1]
+  } else {
+    ' '
+  }
+
+  // 获取token的第一个字符
+  let first_char = if token_str.length() > 0 { token_str[0] } else { ' ' }
+
+  // 不需要空格的情况：
+  // 1. 括号、大括号等配对符号
+  // 2. 某些标点符号组合
+
+  // 检查是否是括号类符号
+  if (last_char == '(' || last_char == '[' || last_char == '{') ||
+    first_char == ')' ||
+    first_char == ']' ||
+    first_char == '}' {
+    return false
+  }
+
+  // 检查是否是某些标点符号组合
+  if last_char == ',' || last_char == ';' || last_char == ':' {
+    return false
+  }
+
+  // 其他情况通常需要空格
+  true
+}
+
+///|
+/// 记录解析错误
+fn record_error(
+  self : Parser,
+  message : String,
+  expected : String,
+  context : String,
+) -> Unit {
+  let actual_token = if self.position < self.tokens.length() {
+    self.tokens[self.position].token.to_string()
+  } else {
+    "EOF"
+  }
+
+  // 获取错误位置的行列信息
+  let (error_line, error_column) = if self.position < self.tokens.length() {
+    let token = self.tokens[self.position]
+    (token.pos.line, token.pos.column)
+    // 如果是EOF，使用最后一个token的位置
+  } else if self.tokens.length() > 0 {
+    let last_token = self.tokens[self.tokens.length() - 1]
+    (last_token.pos.line, last_token.pos.column + 1)
+  } else {
+    (1, 1)
+  }
+
+  // 获取源码上下文（错误行前后各2行）
+  let context_lines = get_source_context(self.source_lines, error_line)
+  let error = ParseError::{
+    message,
+    position: self.position,
+    expected,
+    actual: actual_token,
+    context,
+    source_lines: context_lines,
+    error_line,
+    error_column,
+  }
+  self.last_error = Some(error)
+}
+
+///|
+/// 获取源码上下文
+fn get_source_context(
+  source_lines : Array[String],
+  error_line : Int,
+) -> Array[String] {
+  let start_line = if error_line > 2 { error_line - 2 } else { 1 }
+  let end_line = if error_line + 2 <= source_lines.length() {
+    error_line + 2
+  } else {
+    source_lines.length()
+  }
+  let context = @ref.new([])
+  for i = start_line - 1; i < end_line; i = i + 1 {
+    if i < source_lines.length() {
+      context.val = context.val + [source_lines[i]]
+    }
+  }
+  context.val
+}
+
+///|
+/// 获取最后一个错误
+pub fn get_last_error(self : Parser) -> ParseError? {
+  self.last_error
+}
+
+///|
+/// 清除错误
+fn clear_error(self : Parser) -> Unit {
+  self.last_error = None
 }
 
 ///|
@@ -32,6 +200,26 @@ fn expect_token(self : Parser, expected : @lexer.Token) -> Bool {
     self.advance_parser()
     true
   } else {
+    false
+  }
+}
+
+///|
+/// 期望token并记录错误
+fn expect_token_with_error(
+  self : Parser,
+  expected : @lexer.Token,
+  context : String,
+) -> Bool {
+  if self.current_token() == expected {
+    self.advance_parser()
+    true
+  } else {
+    self.record_error(
+      "期望token: " + expected.to_string(),
+      expected.to_string(),
+      context,
+    )
     false
   }
 }
@@ -878,24 +1066,31 @@ fn parse_block_expr(self : Parser) -> @ast.Expr? {
         continue
       }
       None => {
-        // println("Debug: Failed to parse statement, trying expression")
+        // 保存当前的错误信息
+        let saved_error = self.last_error
         // 回溯到保存的位置
         self.position = saved_pos
 
         // 尝试解析表达式作为最终表达式
         match self.parse_expr() {
           Some(expr) => {
-            // println("Debug: Successfully parsed final expression")
+            // 表达式解析成功，清除错误信息
+            self.last_error = None
             final_expr = Some(expr)
             break
           }
-          None =>
-            // println(
-            //   "Debug: Failed to parse both statement and expression at position " +
-            //   self.position.to_string(),
-            // )
-            // println("Debug: Current token: " + self.current_token().to_string())
+          None => {
+            // 表达式解析也失败，恢复原来的错误信息
+            self.last_error = saved_error
+            // 如果没有错误信息，记录一个通用错误
+            if self.last_error == None {
+              self.record_error(
+                "无法解析块表达式中的语句或表达式", "语句或表达式",
+                "块表达式内部",
+              )
+            }
             return None
+          }
         }
       }
     }
@@ -912,59 +1107,45 @@ fn parse_block_expr(self : Parser) -> @ast.Expr? {
 
 ///|
 pub fn parse_program(self : Parser) -> @ast.Program? {
+  self.clear_error()
   let declarations = []
-  // println("Debug: Starting parse_program")
   while self.current_token() != EOF {
-    // 调试信息：显示当前正在解析的token
-    // println(
-    //   "Debug: Parsing top level, current token position: " +
-    //   self.position.to_string(),
-    // )
     match self.parse_top_level() {
-      Some(decl) =>
-        // println("Debug: Successfully parsed top level declaration")
-        declarations.push(decl)
-      None =>
-        // 添加调试信息显示失败的token
-        // println(
-        //   "Debug: Failed to parse top level at position: " +
-        //   self.position.to_string(),
-        // )
+      Some(decl) => declarations.push(decl)
+      None => {
+        // 如果没有记录错误，记录一个通用错误
+        if self.last_error == None {
+          self.record_error(
+            "无法解析顶层声明", "函数声明、let声明、结构体声明或枚举声明",
+            "程序顶层",
+          )
+        }
         return None
+      }
     }
   }
-  // println("Debug: parse_program completed successfully")
   Some(@ast.Program::{ declarations, })
 }
 
 ///|
 fn parse_top_level(self : Parser) -> @ast.TopLevel? {
-  // println(
-  //   "Debug: parse_top_level - current token at position " +
-  //   self.position.to_string(),
-  // )
   match self.current_token() {
-    Let =>
-      // println("Debug: Parsing top level let declaration")
-      self.parse_top_let_decl()
-    Fn =>
-      // println("Debug: Parsing function declaration")
-      self.parse_toplevel_fn_decl()
-    Struct =>
-      // println("Debug: Parsing struct declaration")
-      self.parse_struct_decl()
-    Enum =>
-      // println("Debug: Parsing enum declaration")
-      self.parse_enum_decl()
-    _ =>
-      // println("Debug: Unexpected token in parse_top_level")
+    Let => self.parse_top_let_decl()
+    Fn => self.parse_toplevel_fn_decl()
+    Struct => self.parse_struct_decl()
+    Enum => self.parse_enum_decl()
+    _ => {
+      self.record_error(
+        "意外的token在程序顶层", "fn、let、struct或enum", "程序顶层声明",
+      )
       None
+    }
   }
 }
 
 ///|
 fn parse_top_let_decl(self : Parser) -> @ast.TopLevel? {
-  if !self.expect_token(Let) {
+  if !self.expect_token_with_error(Let, "let声明") {
     return None
   }
   match self.current_token() {
@@ -976,18 +1157,24 @@ fn parse_top_let_decl(self : Parser) -> @ast.TopLevel? {
       } else {
         None
       }
-      if self.expect_token(Assign) {
-        match self.parse_expr() {
-          Some(expr) =>
-            if self.expect_token(Semicolon) {
-              Some(@ast.TopLetDecl(name, type_annotation, expr))
-            } else {
-              None
-            }
-          None => None
+      if !self.expect_token_with_error(Assign, "let声明中的赋值") {
+        return None
+      }
+      match self.parse_expr() {
+        Some(expr) =>
+          if self.expect_token_with_error(Semicolon, "let声明结尾") {
+            Some(@ast.TopLetDecl(name, type_annotation, expr))
+          } else {
+            None
+          }
+        None => {
+          self.record_error(
+            "无法解析let声明的表达式",
+            "表达式",
+            "let " + name + " = ...",
+          )
+          None
         }
-      } else {
-        None
       }
     }
     Wildcard => {
@@ -998,21 +1185,30 @@ fn parse_top_let_decl(self : Parser) -> @ast.TopLevel? {
       } else {
         None
       }
-      if self.expect_token(Assign) {
-        match self.parse_expr() {
-          Some(expr) =>
-            if self.expect_token(Semicolon) {
-              Some(@ast.TopLetWildcardDecl(type_annotation, expr))
-            } else {
-              None
-            }
-          None => None
+      if !self.expect_token_with_error(Assign, "let声明中的赋值") {
+        return None
+      }
+      match self.parse_expr() {
+        Some(expr) =>
+          if self.expect_token_with_error(Semicolon, "let声明结尾") {
+            Some(@ast.TopLetWildcardDecl(type_annotation, expr))
+          } else {
+            None
+          }
+        None => {
+          self.record_error(
+            "无法解析let声明的表达式", "表达式", "let _ = ...",
+          )
+          None
         }
-      } else {
-        None
       }
     }
-    _ => None
+    _ => {
+      self.record_error(
+        "let声明后需要变量名或通配符", "标识符或_", "let声明",
+      )
+      None
+    }
   }
 }
 
@@ -1298,13 +1494,40 @@ fn parse_stmt(self : Parser) -> @ast.Stmt? {
   // )
   match self.current_token() {
     Let =>
-      // println("Debug: Calling parse_let_stmt")
-      self.parse_let_stmt()
+      match self.parse_let_stmt() {
+        Some(stmt) => Some(stmt)
+        None =>
+          // parse_let_stmt已经记录了错误，直接返回None
+          None
+      }
     While =>
-      // println("Debug: Calling parse_while_stmt")
-      self.parse_while_stmt()
-    Return => self.parse_return_stmt()
-    Fn => self.parse_fn_decl_stmt()
+      match self.parse_while_stmt() {
+        Some(stmt) => Some(stmt)
+        None => {
+          self.record_error("无法解析while语句", "while语句", "语句")
+          None
+        }
+      }
+    Return =>
+      match self.parse_return_stmt() {
+        Some(stmt) => Some(stmt)
+        None => {
+          self.record_error(
+            "无法解析return语句", "return语句", "语句",
+          )
+          None
+        }
+      }
+    Fn =>
+      match self.parse_fn_decl_stmt() {
+        Some(stmt) => Some(stmt)
+        None => {
+          self.record_error(
+            "无法解析函数声明语句", "函数声明语句", "语句",
+          )
+          None
+        }
+      }
     @lexer.Identifier(_) => {
       // 可能是赋值语句或表达式语句
       // 先尝试解析为赋值语句，如果失败则作为表达式语句
@@ -1356,9 +1579,7 @@ fn parse_binding(self : Parser) -> @ast.Binding? {
 
 ///|
 fn parse_let_stmt(self : Parser) -> @ast.Stmt? {
-  // println("Debug: parse_let_stmt starting")
-  if !self.expect_token(Let) {
-    // println("Debug: Failed to expect Let token")
+  if !self.expect_token_with_error(Let, "let语句") {
     return None
   }
 
@@ -1375,22 +1596,24 @@ fn parse_let_stmt(self : Parser) -> @ast.Stmt? {
         } else {
           None
         }
-        if self.expect_token(Assign) {
-          match self.parse_expr() {
-            Some(expr) =>
-              if self.expect_token(Semicolon) {
-                Some(@ast.LetMutStmt(name, type_annotation, expr))
-              } else {
-                // println("Debug: Failed to find semicolon in mut let")
-                None
-              }
-            None =>
-              // println("Debug: Failed to parse expression in mut let")
+        if !self.expect_token_with_error(Assign, "mut let语句中的赋值") {
+          return None
+        }
+        match self.parse_expr() {
+          Some(expr) =>
+            if self.expect_token_with_error(Semicolon, "mut let语句结尾") {
+              Some(@ast.LetMutStmt(name, type_annotation, expr))
+            } else {
               None
+            }
+          None => {
+            self.record_error(
+              "无法解析mut let语句的表达式",
+              "表达式",
+              "let mut " + name + " = ...",
+            )
+            None
           }
-        } else {
-          // println("Debug: Failed to find assign in mut let")
-          None
         }
       }
       _ =>
@@ -1449,30 +1672,30 @@ fn parse_let_stmt(self : Parser) -> @ast.Stmt? {
         } else {
           None
         }
-        if self.expect_token(Assign) {
-          // println("Debug: Found assign token")
-          match self.parse_expr() {
-            Some(expr) =>
-              // println("Debug: Parsed expression successfully")
-              if self.expect_token(Semicolon) {
-                // println("Debug: Found semicolon, let statement complete")
-                Some(@ast.LetStmt(binding, type_annotation, expr))
-              } else {
-                // println("Debug: Failed to find semicolon in regular let")
-                None
-              }
-            None =>
-              // println("Debug: Failed to parse expression in regular let")
+        if !self.expect_token_with_error(Assign, "let语句中的赋值") {
+          return None
+        }
+        match self.parse_expr() {
+          Some(expr) =>
+            if self.expect_token_with_error(Semicolon, "let语句结尾") {
+              Some(@ast.LetStmt(binding, type_annotation, expr))
+            } else {
               None
+            }
+          None => {
+            self.record_error(
+              "无法解析let语句的表达式", "表达式", "let语句",
+            )
+            None
           }
-        } else {
-          // println("Debug: Failed to find assign in regular let")
-          None
         }
       }
-      None =>
-        // println("Debug: Failed to parse binding")
+      None => {
+        self.record_error(
+          "let语句后需要变量名或通配符", "标识符或_", "let语句",
+        )
         None
+      }
     }
   }
 }

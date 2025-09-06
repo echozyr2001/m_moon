@@ -212,7 +212,15 @@ fn compile(
       }
       Ok(stats)
     }
-    None => Err("语法分析失败")
+    None =>
+      // 获取详细的解析错误信息
+      match parser.get_last_error() {
+        Some(error) => {
+          let error_msg = format_parse_error(error)
+          Err(error_msg)
+        }
+        None => Err("语法分析失败: 未知错误")
+      }
   }
 }
 
@@ -449,4 +457,61 @@ fn format_semantic_errors(errors : Array[String]) -> String {
     content = content + "[" + (i + 1).to_string() + "] " + errors[i] + "\n"
   }
   content
+}
+
+///|
+/// 格式化解析错误信息
+fn format_parse_error(error : @parser.ParseError) -> String {
+  let mut error_msg = "语法分析失败:\n"
+  error_msg = error_msg + "  错误: " + error.message + "\n"
+  error_msg = error_msg + "  期望: " + error.expected + "\n"
+  error_msg = error_msg + "  实际: " + error.actual + "\n"
+  error_msg = error_msg + "  上下文: " + error.context + "\n"
+  error_msg = error_msg +
+    "  位置: 第" +
+    error.error_line.to_string() +
+    "行，第" +
+    error.error_column.to_string() +
+    "列\n\n"
+
+  // 添加源码上下文
+  error_msg = error_msg + "源码上下文:\n"
+  let start_line = if error.error_line > 2 { error.error_line - 2 } else { 1 }
+  for i = 0; i < error.source_lines.length(); i = i + 1 {
+    let line_num = start_line + i
+    let line_content = error.source_lines[i]
+    if line_num == error.error_line {
+      // 错误行，添加箭头指示
+      error_msg = error_msg +
+        "  " +
+        line_num.to_string() +
+        " | " +
+        line_content +
+        "\n"
+      error_msg = error_msg +
+        "     | " +
+        generate_error_pointer(error.error_column) +
+        "\n"
+    } else {
+      // 普通行
+      error_msg = error_msg +
+        "  " +
+        line_num.to_string() +
+        " | " +
+        line_content +
+        "\n"
+    }
+  }
+  error_msg
+}
+
+///|
+/// 生成错误指针
+fn generate_error_pointer(column : Int) -> String {
+  let mut pointer = ""
+  for i = 1; i < column; i = i + 1 {
+    pointer = pointer + " "
+  }
+  pointer = pointer + "^"
+  pointer
 }

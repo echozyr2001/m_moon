@@ -278,9 +278,15 @@ pub fn next_token(self : Lexer) -> TokenWithPos {
       // 检查是否是浮点数
       if self.current_char() == Some('.') {
         self.advance() // 跳过 '.'
-        let _frac = self.read_number() // 小数部分
-        // 这里应该构造 Double，但为了简化先返回 Number
-        TokenWithPos::{ token: Number(num), pos }
+        let frac = self.read_number() // 小数部分
+        // 手动计算浮点数值：整数部分 + 小数部分 / 10^(小数位数)
+        let frac_val = frac.to_double()
+        let mut divisor = 10.0
+        while frac_val >= divisor {
+          divisor = divisor * 10.0
+        }
+        let double_val = num.to_double() + frac_val / divisor
+        TokenWithPos::{ token: DoubleLiteral(double_val), pos }
       } else {
         TokenWithPos::{ token: Number(num), pos }
       }

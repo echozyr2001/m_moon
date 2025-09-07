@@ -853,6 +853,10 @@ fn parse_value_expr(self : Parser) -> @ast.Expr? {
       self.advance_parser()
       Some(@ast.IntLiteral(n))
     }
+    DoubleLiteral(d) => {
+      self.advance_parser()
+      Some(@ast.DoubleLiteral(d))
+    }
     @lexer.Identifier(name) => {
       self.advance_parser()
       Some(@ast.Identifier(name))

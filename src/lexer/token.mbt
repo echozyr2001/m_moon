@@ -24,6 +24,7 @@ pub(all) enum Token {
 
   // 字面量
   Number(Int)
+  DoubleLiteral(Double)
   Identifier(String)
   UpperIdentifier(String) // 大写开头的标识符
 

@@ -1161,12 +1161,13 @@ fn parse_top_let_decl(self : Parser) -> @ast.TopLevel? {
         return None
       }
       match self.parse_expr() {
-        Some(expr) =>
-          if self.expect_token_with_error(Semicolon, "let声明结尾") {
-            Some(@ast.TopLetDecl(name, type_annotation, expr))
-          } else {
-            None
+        Some(expr) => {
+          // 在文件末尾时，分号是可选的
+          if self.current_token() == Semicolon {
+            self.advance_parser()
           }
+          Some(@ast.TopLetDecl(name, type_annotation, expr))
+        }
         None => {
           self.record_error(
             "无法解析let声明的表达式",
@@ -1189,12 +1190,13 @@ fn parse_top_let_decl(self : Parser) -> @ast.TopLevel? {
         return None
       }
       match self.parse_expr() {
-        Some(expr) =>
-          if self.expect_token_with_error(Semicolon, "let声明结尾") {
-            Some(@ast.TopLetWildcardDecl(type_annotation, expr))
-          } else {
-            None
+        Some(expr) => {
+          // 在文件末尾时，分号是可选的
+          if self.current_token() == Semicolon {
+            self.advance_parser()
           }
+          Some(@ast.TopLetWildcardDecl(type_annotation, expr))
+        }
         None => {
           self.record_error(
             "无法解析let声明的表达式", "表达式", "let _ = ...",
@@ -1395,6 +1397,16 @@ fn parse_toplevel_fn_decl(self : Parser) -> @ast.TopLevel? {
     Main => {
       // println("Debug: Parsing main function")
       self.advance_parser()
+      // 检查是否有空参数列表 ()
+      if self.current_token() == LParen {
+        self.advance_parser()
+        if !self.expect_token(RParen) {
+          self.record_error(
+            "main函数参数列表应为空", ")", "main函数声明",
+          )
+          return None
+        }
+      }
       match self.parse_block_expr() {
         Some(body) =>
           // println("Debug: Main function parsed successfully")

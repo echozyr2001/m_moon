@@ -79,11 +79,27 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.local_vars.clear()
       self.function_params.clear()
 
-      // 设置参数映射 (前8个参数使用a0-a7寄存器)
-      for i = 0; i < params.length() && i < 8; i = i + 1 {
-        self.function_params.set(params[i].0, i)
+      // 保存参数到栈上 (前8个参数使用a0-a7寄存器)
+      if params.length() > 0 {
+        let param_stack_size = params.length() * 8
+        self.emit_line("  # 保存参数到栈上")
+        self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
+        for i = 0; i < params.length() && i < 8; i = i + 1 {
+          self.emit_line(
+            "  sd a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+          )
+          // 保存参数相对于帧指针的偏移：fp - 16 (ra+fp) - 8*i - 8
+          let param_offset = -16 - param_stack_size + i * 8
+          self.function_params.set(params[i].0, param_offset)
+        }
       }
       self.generate_expression(body)
+      // 恢复参数栈空间
+      if params.length() > 0 {
+        let param_stack_size = params.length() * 8
+        self.emit_line("  # 恢复参数栈空间")
+        self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
+      }
       self.emit_line("  # 恢复返回地址和帧指针")
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
@@ -227,12 +243,25 @@ fn generate_function_call(
           )
         }
 
-        // 计算参数并放入寄存器
-        for i = 0; i < args.length() && i < 8; i = i + 1 {
-          self.generate_expression(args[i])
-          if i > 0 {
-            self.emit_line("  mv a" + i.to_string() + ", a0")
+        // 计算参数并放入寄存器 (修复多参数问题)
+        if args.length() > 1 {
+          // 先将所有参数计算结果保存到栈上
+          let param_stack_size = args.length() * 8
+          self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
+          for i = 0; i < args.length() && i < 8; i = i + 1 {
+            self.generate_expression(args[i])
+            self.emit_line("  sd a0, " + (i * 8).to_string() + "(sp)")
           }
+
+          // 从栈上加载到正确的寄存器
+          for i = 0; i < args.length() && i < 8; i = i + 1 {
+            self.emit_line(
+              "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+            )
+          }
+          self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
+        } else if args.length() == 1 {
+          self.generate_expression(args[0])
         }
 
         // 调用函数
@@ -545,14 +574,9 @@ fn generate_left_value_address(
 fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
   // 检查是否是函数参数
   match self.function_params.get(name) {
-    Some(param_index) => {
-      if param_index < 8 {
-        self.emit_line("  mv a0, a" + param_index.to_string())
-      } else {
-        // 参数在栈上
-        let offset = (param_index - 8) * 8 + 16
-        self.emit_line("  ld a0, " + offset.to_string() + "(fp)")
-      }
+    Some(fp_offset) => {
+      // 使用帧指针访问参数
+      self.emit_line("  ld a0, " + fp_offset.to_string() + "(fp)")
       return
     }
     None => ()
@@ -613,12 +637,30 @@ fn generate_predefined_function_call(
   func_name : String,
   args : Array[@ast.Expr],
 ) -> Unit {
-  // 计算参数并放入寄存器
-  for i = 0; i < args.length() && i < 8; i = i + 1 {
-    self.generate_expression(args[i])
-    if i > 0 {
-      self.emit_line("  mv a" + i.to_string() + ", a0")
+  // 如果有多个参数，需要保存之前计算的结果
+  if args.length() > 1 {
+    // 为参数预分配栈空间
+    let param_stack_size = args.length() * 8
+    self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
+
+    // 计算所有参数并保存到栈上
+    for i = 0; i < args.length() && i < 8; i = i + 1 {
+      self.generate_expression(args[i])
+      self.emit_line("  sd a0, " + (i * 8).to_string() + "(sp)")
     }
+
+    // 从栈上加载到寄存器
+    for i = 0; i < args.length() && i < 8; i = i + 1 {
+      self.emit_line(
+        "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+      )
+    }
+
+    // 恢复栈空间
+    self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
+  } else if args.length() == 1 {
+    // 单参数情况
+    self.generate_expression(args[0])
   }
 
   // 调用预定义函数

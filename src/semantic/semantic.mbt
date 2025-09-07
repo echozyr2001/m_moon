@@ -53,6 +53,26 @@ pub fn SemanticAnalyzer::new() -> SemanticAnalyzer {
     params: [Int],
     return_type: Unit,
   })
+  analyzer.scopes[0].functions.set("read_int", FunctionType::{
+    params: [],
+    return_type: Int,
+  })
+  analyzer.scopes[0].functions.set("print_char", FunctionType::{
+    params: [Int], // 字符用Int表示
+    return_type: Unit,
+  })
+  analyzer.scopes[0].functions.set("read_char", FunctionType::{
+    params: [],
+    return_type: Int,
+  })
+  analyzer.scopes[0].functions.set("int_of_float", FunctionType::{
+    params: [Double],
+    return_type: Int,
+  })
+  analyzer.scopes[0].functions.set("float_of_int", FunctionType::{
+    params: [Int],
+    return_type: Double,
+  })
   analyzer
 }
 

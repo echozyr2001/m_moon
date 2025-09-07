@@ -7,9 +7,16 @@ pub struct SemanticAnalyzer {
 }
 
 ///|
+/// 变量信息
+priv struct VariableInfo {
+  var_type : Type
+  is_mutable : Bool
+} derive(Show)
+
+///|
 /// 作用域
 struct Scope {
-  variables : Map[String, Type]
+  variables : Map[String, VariableInfo]
   functions : Map[String, FunctionType]
 }
 
@@ -97,10 +104,16 @@ fn analyze_program_internal(
     match decl {
       @ast.StructDecl(name, _generic_param, _fields) =>
         // 将结构体类型添加到全局作用域
-        self.scopes[0].variables.set(name, UserDefinedType(name))
+        self.scopes[0].variables.set(name, VariableInfo::{
+          var_type: UserDefinedType(name),
+          is_mutable: false,
+        })
       @ast.EnumDecl(name, _generic_param, _variants) =>
         // 将枚举类型添加到全局作用域
-        self.scopes[0].variables.set(name, UserDefinedType(name))
+        self.scopes[0].variables.set(name, VariableInfo::{
+          var_type: UserDefinedType(name),
+          is_mutable: false,
+        })
       _ => ()
     }
   }
@@ -142,7 +155,7 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
       // 添加参数到作用域
       for param in params {
         let param_type = self.ast_type_to_type(param.1)
-        self.add_variable(param.0, param_type)
+        self.add_variable(param.0, param_type, true) // Function parameters are mutable by default
       }
       let expected_return = self.ast_type_to_type(return_type)
       let actual_return = self.analyze_expression(body)
@@ -191,7 +204,7 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
           expr_type.to_string(),
         )
       }
-      self.add_variable(name, expected_type)
+      self.add_variable(name, expected_type, false) // Top-level let declarations are immutable
     }
     @ast.TopLetWildcardDecl(type_annotation, expr) => {
       let expr_type = self.analyze_expression(expr)
@@ -230,7 +243,7 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
               expr_type.to_string(),
             )
           }
-          self.add_variable(name, expected_type)
+          self.add_variable(name, expected_type, false) // let statements create immutable variables
         }
         @ast.Binding::Wildcard =>
           // 通配符不需要类型检查
@@ -254,7 +267,7 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
           expr_type.to_string(),
         )
       }
-      self.add_variable(name, expected_type)
+      self.add_variable(name, expected_type, true) // let mut statements create mutable variables
       Unit
     }
     @ast.AssignStmt(target, expr) => {
@@ -312,7 +325,7 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
       self.push_scope()
       for param in params {
         match param.1 {
-          Some(t) => self.add_variable(param.0, self.ast_type_to_type(t))
+          Some(t) => self.add_variable(param.0, self.ast_type_to_type(t), true) // Function parameters are mutable
           None => ()
         }
       }
@@ -328,7 +341,7 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
       // 简化处理：假设所有变量都是Unit类型
       for binding in bindings {
         match binding {
-          @ast.Binding::Variable(name) => self.add_variable(name, Unit)
+          @ast.Binding::Variable(name) => self.add_variable(name, Unit, false) // Tuple bindings are immutable
           @ast.Binding::Wildcard =>
             // 通配符不需要添加到作用域
             ()
@@ -345,7 +358,12 @@ fn analyze_left_value(self : SemanticAnalyzer, lvalue : @ast.LeftValue) -> Type 
   match lvalue {
     @ast.Variable(name) =>
       match self.lookup_variable(name) {
-        Some(t) => t
+        Some(t) => {
+          if not(t.is_mutable) {
+            self.add_error("Cannot assign to immutable variable: " + name)
+          }
+          t.var_type
+        }
         None => {
           self.add_error("未定义的变量: " + name)
           Unit
@@ -383,7 +401,7 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
     @ast.UnitLiteral => Unit
     @ast.Identifier(name) =>
       match self.lookup_variable(name) {
-        Some(t) => t
+        Some(t) => t.var_type
         None => {
           self.add_error("未定义的变量: " + name)
           Unit
@@ -551,11 +569,11 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
         match param.1 {
           Some(param_type) => {
             let type_val = self.ast_type_to_type(param_type)
-            self.add_variable(param.0, type_val)
+            self.add_variable(param.0, type_val, true) // Function parameters are mutable
           }
           None =>
             // 参数没有类型注解，假设为Int类型
-            self.add_variable(param.0, Int)
+            self.add_variable(param.0, Int, true) // Function parameters are mutable
         }
       }
       // 分析函数体
@@ -689,7 +707,7 @@ fn ast_type_to_type(self : SemanticAnalyzer, ast_type : @ast.Type) -> Type {
     @ast.UserDefinedType(name) =>
       // 查找用户定义类型
       match self.lookup_variable(name) {
-        Some(t) => t
+        Some(t) => t.var_type
         None => {
           self.add_error("未定义的类型: " + name)
           Unit
@@ -720,9 +738,17 @@ fn pop_scope(self : SemanticAnalyzer) -> Unit {
 }
 
 ///|
-fn add_variable(self : SemanticAnalyzer, name : String, type_ : Type) -> Unit {
+fn add_variable(
+  self : SemanticAnalyzer,
+  name : String,
+  type_ : Type,
+  is_mutable : Bool,
+) -> Unit {
   let current_scope_index = self.scopes.length() - 1
-  self.scopes[current_scope_index].variables.set(name, type_)
+  self.scopes[current_scope_index].variables.set(name, VariableInfo::{
+    var_type: type_,
+    is_mutable,
+  })
 }
 
 ///|
@@ -736,7 +762,7 @@ fn add_function(
 }
 
 ///|
-fn lookup_variable(self : SemanticAnalyzer, name : String) -> Type? {
+fn lookup_variable(self : SemanticAnalyzer, name : String) -> VariableInfo? {
   for i = self.scopes.length() - 1; i >= 0; i = i - 1 {
     match self.scopes[i].variables.get(name) {
       Some(t) => return Some(t)

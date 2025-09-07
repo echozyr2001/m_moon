@@ -159,7 +159,8 @@ fn compile(
         return Err(
           "语义分析失败: " +
           semantic_result.errors.length().to_string() +
-          " 个错误",
+          " 个错误\n" +
+          format_semantic_errors(semantic_result.errors),
         )
       }
       if show_semantic {

@@ -54,7 +54,7 @@ fn main {
       } else {
         println("编译失败: " + error)
       }
-      @sys.exit(1)
+      abort("编译失败")
       ("", "") // This line will never be reached, but satisfies the type checker
     }
   }
@@ -86,7 +86,7 @@ fn main {
     }
     Err(error) => {
       println("编译失败: " + error)
-      @sys.exit(1)
+      abort("编译失败")
     }
   }
 }
@@ -295,7 +295,7 @@ fn write_output_file(filename : String, content : String) -> Unit {
   @fs.write_string_to_file(filename, content) catch {
     error => {
       println("写入输出文件失败: " + error.to_string())
-      @sys.exit(1)
+      abort("写入输出文件失败")
     }
   }
 }

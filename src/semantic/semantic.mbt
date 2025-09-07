@@ -162,7 +162,14 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
         None => expr_type
       }
       if not(self.types_compatible(expr_type, expected_type)) {
-        self.add_error("变量 '" + name + "' 类型不匹配")
+        self.add_error(
+          "变量 '" +
+          name +
+          "' 类型不匹配，期望 " +
+          expected_type.to_string() +
+          "，实际 " +
+          expr_type.to_string(),
+        )
       }
       self.add_variable(name, expected_type)
     }
@@ -194,7 +201,14 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
       match binding {
         @ast.Binding::Variable(name) => {
           if not(self.types_compatible(expr_type, expected_type)) {
-            self.add_error("变量 '" + name + "' 类型不匹配")
+            self.add_error(
+              "变量 '" +
+              name +
+              "' 类型不匹配，期望 " +
+              expected_type.to_string() +
+              "，实际 " +
+              expr_type.to_string(),
+            )
           }
           self.add_variable(name, expected_type)
         }
@@ -211,7 +225,14 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
         None => expr_type
       }
       if not(self.types_compatible(expr_type, expected_type)) {
-        self.add_error("可变变量 '" + name + "' 类型不匹配")
+        self.add_error(
+          "可变变量 '" +
+          name +
+          "' 类型不匹配，期望 " +
+          expected_type.to_string() +
+          "，实际 " +
+          expr_type.to_string(),
+        )
       }
       self.add_variable(name, expected_type)
       Unit
@@ -220,7 +241,12 @@ fn analyze_statement(self : SemanticAnalyzer, stmt : @ast.Stmt) -> Type {
       let target_type = self.analyze_left_value(target)
       let expr_type = self.analyze_expression(expr)
       if not(self.types_compatible(expr_type, target_type)) {
-        self.add_error("赋值类型不匹配")
+        self.add_error(
+          "赋值类型不匹配，期望 " +
+          target_type.to_string() +
+          "，实际 " +
+          expr_type.to_string(),
+        )
       }
       Unit
     }
@@ -371,7 +397,10 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
                     name +
                     "' 第 " +
                     (i + 1).to_string() +
-                    " 个参数类型不匹配",
+                    " 个参数类型不匹配，期望 " +
+                    expected_type.to_string() +
+                    "，实际 " +
+                    arg_type.to_string(),
                   )
                 }
               }
@@ -715,8 +744,30 @@ fn types_compatible(
   actual : Type,
   expected : Type,
 ) -> Bool {
-  ignore(self)
-  actual == expected
+  match (actual, expected) {
+    (Int, Int) | (Double, Double) | (Bool, Bool) | (Unit, Unit) => true
+    (Array(actual_elem), Array(expected_elem)) =>
+      self.types_compatible(actual_elem, expected_elem)
+    (
+      Function(actual_params, actual_ret),
+      Function(expected_params, expected_ret),
+    ) =>
+      if actual_params.length() != expected_params.length() {
+        false
+      } else {
+        let mut compatible = self.types_compatible(actual_ret, expected_ret)
+        for i = 0; i < actual_params.length(); i = i + 1 {
+          if not(self.types_compatible(actual_params[i], expected_params[i])) {
+            compatible = false
+            break
+          }
+        }
+        compatible
+      }
+    (UserDefinedType(actual_name), UserDefinedType(expected_name)) =>
+      actual_name == expected_name
+    _ => false
+  }
 }
 
 ///|

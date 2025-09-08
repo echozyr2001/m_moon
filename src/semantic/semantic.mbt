@@ -11,7 +11,7 @@ pub struct SemanticAnalyzer {
 priv struct VariableInfo {
   var_type : Type
   is_mutable : Bool
-} derive(Show)
+}
 
 ///|
 /// 作用域

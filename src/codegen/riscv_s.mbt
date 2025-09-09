@@ -58,6 +58,9 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
+      // 调用 print_int 输出结果
+      self.emit_line("  # 输出结果")
+      self.emit_line("  call minimbt_print_int")
       self.emit_line(self.current_return_label + ":")
       self.emit_line("  # 恢复栈帧")
       self.emit_line("  ld ra, 8(sp)")

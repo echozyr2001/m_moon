@@ -6,6 +6,7 @@ pub struct RiscVCodeGen {
   mut stack_offset : Int
   mut local_vars : Map[String, Int] // 变量名 -> 栈偏移
   function_params : Map[String, Int] // 参数名 -> 寄存器/栈位置
+  mut current_return_label : String // 当前函数的返回标签
 }
 
 ///|
@@ -17,6 +18,7 @@ pub fn RiscVCodeGen::new() -> RiscVCodeGen {
     stack_offset: 0,
     local_vars: Map::new(),
     function_params: Map::new(),
+    current_return_label: "",
   }
 }
 
@@ -54,7 +56,9 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.stack_offset = 0
       self.local_vars.clear()
       self.function_params.clear()
+      self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
+      self.emit_line(self.current_return_label + ":")
       self.emit_line("  # 恢复返回地址和帧指针")
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
@@ -78,6 +82,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.stack_offset = 0
       self.local_vars.clear()
       self.function_params.clear()
+      self.current_return_label = self.new_label("function_return")
 
       // 保存参数到栈上 (前8个参数使用a0-a7寄存器)
       if params.length() > 0 {
@@ -100,6 +105,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
         self.emit_line("  # 恢复参数栈空间")
         self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
       }
+      self.emit_line(self.current_return_label + ":")
       self.emit_line("  # 恢复返回地址和帧指针")
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
@@ -151,12 +157,41 @@ fn generate_expression(self : RiscVCodeGen, expr : @ast.Expr) -> Unit {
     @ast.ArrayMake(size, init_value) =>
       self.generate_array_make(size, init_value)
     @ast.ArrayAccess(array, index) => self.generate_array_access(array, index)
+    @ast.ArrayExpr(elems) => self.generate_array_expr(elems)
     @ast.GroupExpr(inner) => self.generate_expression(inner)
     _ => {
       self.emit_line("  # 未实现的表达式类型")
       self.emit_line("  li a0, 0")
     }
   }
+}
+
+///|
+/// 生成数组字面量
+fn generate_array_expr(self : RiscVCodeGen, elems : Array[@ast.Expr]) -> Unit {
+  // 分配数组：大小在a0，初始值在a1（此处传0），返回数组指针在a0
+  self.emit_line("  # 数组字面量分配与初始化")
+  self.emit_line("  li a0, " + elems.length().to_string())
+  self.emit_line("  li a1, 0")
+  self.emit_line("  call minimbt_create_array")
+  // a0 = 数组指针，保存到栈上临时位置
+  self.emit_line("  addi sp, sp, -8")
+  self.emit_line("  sd a0, 0(sp)")
+
+  // 逐个初始化元素：计算值放a2，加载数组指针到a0，索引到a1，存储到 a0 + a1*8
+  for i = 0; i < elems.length(); i = i + 1 {
+    self.generate_expression(elems[i])
+    self.emit_line("  mv a2, a0")
+    self.emit_line("  ld a0, 0(sp)")
+    self.emit_line("  li a1, " + i.to_string())
+    self.emit_line("  slli a1, a1, 3")
+    self.emit_line("  add a0, a0, a1")
+    self.emit_line("  sd a2, 0(a0)")
+  }
+
+  // 恢复数组指针到a0作为结果
+  self.emit_line("  ld a0, 0(sp)")
+  self.emit_line("  addi sp, sp, 8")
 }
 
 ///|
@@ -234,12 +269,12 @@ fn generate_function_call(
       if is_predefined_function(self, func_name) {
         self.generate_predefined_function_call(func_name, args)
       } else {
-        // 保存调用者保存的寄存器
-        self.emit_line("  # 保存调用者保存的寄存器")
-        self.emit_line("  addi sp, sp, -64")
-        for i = 0; i < 8; i = i + 1 {
+        // 保存调用者保存的寄存器（不覆盖a0，保留返回值寄存器）
+        self.emit_line("  # 保存调用者保存的寄存器 a1-a7")
+        self.emit_line("  addi sp, sp, -56")
+        for i = 1; i < 8; i = i + 1 {
           self.emit_line(
-            "  sd a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+            "  sd a" + i.to_string() + ", " + ((i - 1) * 8).to_string() + "(sp)",
           )
         }
 
@@ -267,14 +302,14 @@ fn generate_function_call(
         // 调用函数
         self.emit_line("  call minimbt_" + func_name)
 
-        // 恢复调用者保存的寄存器
-        self.emit_line("  # 恢复调用者保存的寄存器")
+        // 恢复调用者保存的寄存器 a1-a7
+        self.emit_line("  # 恢复调用者保存的寄存器 a1-a7")
         for i = 1; i < 8; i = i + 1 {
           self.emit_line(
-            "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+            "  ld a" + i.to_string() + ", " + ((i - 1) * 8).to_string() + "(sp)",
           )
         }
-        self.emit_line("  addi sp, sp, 64")
+        self.emit_line("  addi sp, sp, 56")
       }
     _ => {
       self.emit_line("  # 不支持的函数调用形式")
@@ -418,7 +453,11 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
         Some(expr) => self.generate_expression(expr)
         None => self.emit_line("  li a0, 0")
       }
-      self.emit_line("  j function_return")
+      if self.current_return_label != "" {
+        self.emit_line("  j " + self.current_return_label)
+      } else {
+        self.emit_line("  ret")
+      }
     }
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {

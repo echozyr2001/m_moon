@@ -97,11 +97,9 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.generate_expression(body)
       self.emit_line(self.current_return_label + ":")
 
-      // 恢复栈指针到参数保存前的位置  
-      if params.length() > 0 && params.length() <= 8 {
-        self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
-      }
+      // 恢复栈帧 - ra和fp是相对于函数开始时的栈指针位置保存的
       self.emit_line("  # 恢复栈帧")
+      self.emit_line("  mv sp, fp") // 恢复到函数开始时的栈指针位置
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
       self.emit_line("  addi sp, sp, 16")

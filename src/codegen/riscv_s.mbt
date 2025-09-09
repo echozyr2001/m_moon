@@ -58,7 +58,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
-      // 调用 print_int 输出结果
+      // 调用 print_int 输出结果，结果应该在 a0 中
       self.emit_line("  # 输出结果")
       self.emit_line("  call minimbt_print_int")
       self.emit_line(self.current_return_label + ":")
@@ -87,7 +87,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
 
-      // 简化参数处理：只处理前8个参数，保存到栈上
+      // 处理函数参数：保存寄存器参数到栈上
       for i = 0; i < params.length() && i < 8; i = i + 1 {
         self.stack_offset = self.stack_offset - 8
         self.emit_line("  addi sp, sp, -8")
@@ -96,6 +96,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       }
       self.generate_expression(body)
       self.emit_line(self.current_return_label + ":")
+
       // 恢复栈指针到参数保存前的位置  
       if params.length() > 0 && params.length() <= 8 {
         self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
@@ -203,10 +204,14 @@ fn generate_binary_op(
   left : @ast.Expr,
   right : @ast.Expr,
 ) -> Unit {
+  // 保存当前栈偏移
+  let saved_offset = self.stack_offset
+
   // 计算右操作数，保存到栈上
   self.generate_expression(right)
   self.emit_line("  addi sp, sp, -8")
   self.emit_line("  sd a0, 0(sp)")
+  self.stack_offset = self.stack_offset - 8
 
   // 计算左操作数
   self.generate_expression(left)
@@ -214,6 +219,7 @@ fn generate_binary_op(
   // 从栈上恢复右操作数到a1
   self.emit_line("  ld a1, 0(sp)")
   self.emit_line("  addi sp, sp, 8")
+  self.stack_offset = saved_offset
   match op {
     @ast.Add => self.emit_line("  add a0, a0, a1")
     @ast.Sub => self.emit_line("  sub a0, a0, a1")
@@ -309,26 +315,34 @@ fn generate_function_call(
           return
         }
 
-        // 保存调用者使用的寄存器 (只保存可能被破坏的寄存器)
-        if args.length() > 0 {
-          self.emit_line("  # 保存寄存器并计算参数")
-          // 先计算所有参数并临时保存
-          for i = 0; i < args.length(); i = i + 1 {
-            self.generate_expression(args[i])
-            self.emit_line("  addi sp, sp, -8")
-            self.emit_line("  sd a0, 0(sp)")
+        // 简单直接的参数传递：依次计算参数并放入寄存器
+        match args.length() {
+          0 => ()
+          1 => self.generate_expression(args[0])
+          // a0 已经包含第一个参数
+          2 => {
+            // 先计算第二个参数并保存
+            self.generate_expression(args[1])
+            self.emit_line("  mv a1, a0")
+            // 计算第一个参数
+            self.generate_expression(args[0])
+            // a0 包含第一个参数，a1 包含第二个参数
           }
+          _ => {
+            // 对于更多参数，使用栈保存
+            for i = 0; i < args.length() && i < 8; i = i + 1 {
+              self.generate_expression(args[i])
+              self.emit_line("  addi sp, sp, -8")
+              self.emit_line("  sd a0, 0(sp)")
+            }
 
-          // 从栈上加载参数到寄存器
-          for i = 0; i < args.length(); i = i + 1 {
-            let stack_pos = (args.length() - 1 - i) * 8
-            self.emit_line(
-              "  ld a" + i.to_string() + ", " + stack_pos.to_string() + "(sp)",
-            )
+            // 从栈恢复到寄存器（逆序）
+            for i = 0; i < args.length() && i < 8; i = i + 1 {
+              let reg_index = args.length() - 1 - i
+              self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
+              self.emit_line("  addi sp, sp, 8")
+            }
           }
-
-          // 清理参数栈空间
-          self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
         }
 
         // 调用函数
@@ -578,10 +592,10 @@ fn generate_assignment(
 
       // 检查是否是函数参数
       match self.function_params.get(name) {
-        Some(offset) => {
+        Some(param_offset) => {
           // 参数在当前函数栈上
-          let stack_pos = offset - self.stack_offset
-          self.emit_line("  sd a0, " + stack_pos.to_string() + "(sp)")
+          let actual_offset = param_offset - self.stack_offset
+          self.emit_line("  sd a0, " + actual_offset.to_string() + "(sp)")
           return
         }
         None => ()
@@ -589,9 +603,9 @@ fn generate_assignment(
 
       // 检查是否是局部变量
       match self.local_vars.get(name) {
-        Some(offset) => {
-          let stack_pos = offset - self.stack_offset
-          self.emit_line("  sd a0, " + stack_pos.to_string() + "(sp)")
+        Some(var_offset) => {
+          let actual_offset = var_offset - self.stack_offset
+          self.emit_line("  sd a0, " + actual_offset.to_string() + "(sp)")
         }
         None => self.emit_line("  # 变量 " + name + " 未找到")
       }
@@ -680,10 +694,10 @@ fn generate_left_value_address(
     @ast.Variable(name) => {
       // 检查是否是函数参数
       match self.function_params.get(name) {
-        Some(offset) => {
+        Some(param_offset) => {
           // 参数在当前函数栈上
-          let stack_pos = offset - self.stack_offset
-          self.emit_line("  addi a0, sp, " + stack_pos.to_string())
+          let actual_offset = param_offset - self.stack_offset
+          self.emit_line("  addi a0, sp, " + actual_offset.to_string())
           return
         }
         None => ()
@@ -691,9 +705,9 @@ fn generate_left_value_address(
 
       // 检查是否是局部变量
       match self.local_vars.get(name) {
-        Some(offset) => {
-          let stack_pos = offset - self.stack_offset
-          self.emit_line("  addi a0, sp, " + stack_pos.to_string())
+        Some(var_offset) => {
+          let actual_offset = var_offset - self.stack_offset
+          self.emit_line("  addi a0, sp, " + actual_offset.to_string())
         }
         None => {
           self.emit_line("  # 变量 " + name + " 未找到")
@@ -726,10 +740,13 @@ fn generate_left_value_address(
 fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
   // 检查是否是函数参数
   match self.function_params.get(name) {
-    Some(offset) => {
-      // 参数保存在当前函数栈上，使用相对于sp的偏移
-      let stack_pos = offset - self.stack_offset
-      self.emit_line("  ld a0, " + stack_pos.to_string() + "(sp)")
+    Some(param_offset) => {
+      // 参数保存在当前函数栈上，使用绝对偏移
+      // param_offset 是负值，表示相对于函数开始时的栈指针
+      // 现在的 sp 可能已经向下移动了 self.stack_offset
+      // 所以实际偏移是：param_offset - self.stack_offset
+      let actual_offset = param_offset - self.stack_offset
+      self.emit_line("  ld a0, " + actual_offset.to_string() + "(sp)")
       return
     }
     None => ()
@@ -737,12 +754,12 @@ fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
 
   // 检查是否是局部变量
   match self.local_vars.get(name) {
-    Some(offset) => {
-      let stack_pos = offset - self.stack_offset
-      self.emit_line("  ld a0, " + stack_pos.to_string() + "(sp)")
+    Some(var_offset) => {
+      let actual_offset = var_offset - self.stack_offset
+      self.emit_line("  ld a0, " + actual_offset.to_string() + "(sp)")
     }
     None => {
-      // 可能是全局变量或外部函数
+      // 可能是全局变量或外部函数，尝试作为函数调用
       self.emit_line("  # 加载全局变量或调用外部函数: " + name)
       self.emit_line("  call minimbt_" + name)
     }
@@ -790,22 +807,34 @@ fn generate_predefined_function_call(
   func_name : String,
   args : Array[@ast.Expr],
 ) -> Unit {
-  // 计算参数并放入正确的寄存器
-  if args.length() > 0 {
-    // 临时保存参数
-    self.emit_line("  addi sp, sp, -" + (args.length() * 8).to_string())
-    for i = 0; i < args.length(); i = i + 1 {
-      self.generate_expression(args[i])
-      self.emit_line("  sd a0, " + (i * 8).to_string() + "(sp)")
+  // 简单直接的参数传递
+  match args.length() {
+    0 => ()
+    1 => self.generate_expression(args[0])
+    // a0 已经包含参数
+    2 => {
+      // 先计算第二个参数并保存
+      self.generate_expression(args[1])
+      self.emit_line("  mv a1, a0")
+      // 计算第一个参数
+      self.generate_expression(args[0])
+      // a0 包含第一个参数，a1 包含第二个参数
     }
+    _ => {
+      // 对于更多参数，使用栈
+      for i = 0; i < args.length() && i < 8; i = i + 1 {
+        self.generate_expression(args[i])
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a0, 0(sp)")
+      }
 
-    // 加载参数到寄存器
-    for i = 0; i < args.length() && i < 8; i = i + 1 {
-      self.emit_line(
-        "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
-      )
+      // 从栈恢复到寄存器（逆序）
+      for i = 0; i < args.length() && i < 8; i = i + 1 {
+        let reg_index = args.length() - 1 - i
+        self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
+        self.emit_line("  addi sp, sp, 8")
+      }
     }
-    self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
   }
 
   // 调用预定义函数

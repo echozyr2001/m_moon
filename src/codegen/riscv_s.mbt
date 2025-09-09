@@ -217,21 +217,25 @@ fn generate_binary_op(
     @ast.Mul => self.emit_line("  mul a0, a0, a1")
     @ast.Div => {
       // 处理除零情况
-      self.emit_line("  beqz a1, .div_zero")
+      let div_zero_label = self.new_label("div_zero")
+      let div_done_label = self.new_label("div_done")
+      self.emit_line("  beqz a1, " + div_zero_label)
       self.emit_line("  div a0, a0, a1")
-      self.emit_line("  j .div_done")
-      self.emit_line(".div_zero:")
+      self.emit_line("  j " + div_done_label)
+      self.emit_line(div_zero_label + ":")
       self.emit_line("  li a0, 0  # 除零返回0")
-      self.emit_line(".div_done:")
+      self.emit_line(div_done_label + ":")
     }
     @ast.Mod => {
       // 处理除零情况
-      self.emit_line("  beqz a1, .mod_zero")
+      let mod_zero_label = self.new_label("mod_zero")
+      let mod_done_label = self.new_label("mod_done")
+      self.emit_line("  beqz a1, " + mod_zero_label)
       self.emit_line("  rem a0, a0, a1")
-      self.emit_line("  j .mod_done")
-      self.emit_line(".mod_zero:")
+      self.emit_line("  j " + mod_done_label)
+      self.emit_line(mod_zero_label + ":")
       self.emit_line("  li a0, 0  # 模零返回0")
-      self.emit_line(".mod_done:")
+      self.emit_line(mod_done_label + ":")
     }
     @ast.Equal => {
       self.emit_line("  sub a0, a0, a1")
@@ -329,9 +333,36 @@ fn generate_function_call(
       }
     _ => {
       // 处理函数表达式调用
+      // 先保存函数地址
       self.generate_expression(func_expr)
-      // 函数表达式的结果在a0中，需要跳转到该地址
-      self.emit_line("  jr a0")
+      self.emit_line("  addi sp, sp, -8")
+      self.emit_line("  sd a0, 0(sp)")
+
+      // 计算参数并放入寄存器
+      if args.length() > 0 {
+        // 先计算所有参数并临时保存
+        for i = 0; i < args.length(); i = i + 1 {
+          self.generate_expression(args[i])
+          self.emit_line("  addi sp, sp, -8")
+          self.emit_line("  sd a0, 0(sp)")
+        }
+
+        // 从栈上加载参数到寄存器
+        for i = 0; i < args.length() && i < 8; i = i + 1 {
+          let stack_pos = (args.length() - 1 - i) * 8
+          self.emit_line(
+            "  ld a" + i.to_string() + ", " + stack_pos.to_string() + "(sp)",
+          )
+        }
+
+        // 清理参数栈空间
+        self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
+      }
+
+      // 恢复函数地址并调用
+      self.emit_line("  ld t0, 0(sp)")
+      self.emit_line("  addi sp, sp, 8")
+      self.emit_line("  jalr ra, t0, 0")
     }
   }
 }
@@ -443,10 +474,12 @@ fn generate_array_access(
   self.emit_line("  addi sp, sp, 8")
 
   // 边界检查
-  self.emit_line("  bltz a1, .array_bounds_error")
+  let bounds_error_label = self.new_label("array_bounds_error")
+  let access_done_label = self.new_label("array_access_done")
+  self.emit_line("  bltz a1, " + bounds_error_label)
   self.emit_line("  # 假设数组长度在数组的第一个元素")
   self.emit_line("  lw t0, 0(a0)  # 加载数组长度")
-  self.emit_line("  bge a1, t0, .array_bounds_error")
+  self.emit_line("  bge a1, t0, " + bounds_error_label)
 
   // 计算偏移并加载值：array[index] = *(array + 4 + index * 4)
   // 数组布局：[长度][元素0][元素1]...
@@ -454,10 +487,10 @@ fn generate_array_access(
   self.emit_line("  slli a1, a1, 2  # 索引 * 4")
   self.emit_line("  add a0, a0, a1")
   self.emit_line("  lw a0, 0(a0)") // 使用lw加载32位整数
-  self.emit_line("  j .array_access_done")
-  self.emit_line(".array_bounds_error:")
+  self.emit_line("  j " + access_done_label)
+  self.emit_line(bounds_error_label + ":")
   self.emit_line("  li a0, 0  # 越界返回0")
-  self.emit_line(".array_access_done:")
+  self.emit_line(access_done_label + ":")
 }
 
 ///|
@@ -580,19 +613,23 @@ fn generate_assignment(
       self.emit_line("  addi sp, sp, 16")
 
       // 边界检查
-      self.emit_line("  bltz a1, .array_assign_bounds_error")
+      let assign_bounds_error_label = self.new_label(
+        "array_assign_bounds_error",
+      )
+      let assign_done_label = self.new_label("array_assign_done")
+      self.emit_line("  bltz a1, " + assign_bounds_error_label)
       self.emit_line("  lw t0, 0(a0)  # 加载数组长度")
-      self.emit_line("  bge a1, t0, .array_assign_bounds_error")
+      self.emit_line("  bge a1, t0, " + assign_bounds_error_label)
 
       // 存储值：array[index] = *(array + 4 + index * 4)
       self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
       self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
       self.emit_line("  sw a2, 0(a0)") // 使用sw存储32位整数
-      self.emit_line("  j .array_assign_done")
-      self.emit_line(".array_assign_bounds_error:")
+      self.emit_line("  j " + assign_done_label)
+      self.emit_line(assign_bounds_error_label + ":")
       self.emit_line("  # 越界赋值，忽略")
-      self.emit_line(".array_assign_done:")
+      self.emit_line(assign_done_label + ":")
     }
     @ast.FieldAccess(target, _field_name) => {
       // 简化处理：假设字段赋值
@@ -903,12 +940,48 @@ fn generate_match_expr(
 /// 生成函数表达式（闭包）
 fn generate_function_expr(
   self : RiscVCodeGen,
-  _params : Array[(String, @ast.Type?)],
+  params : Array[(String, @ast.Type?)],
   _return_type : @ast.Type?,
-  _body : @ast.Expr,
+  body : @ast.Expr,
 ) -> Unit {
-  // 简化处理：返回一个占位符
-  self.emit_line("  li a0, 0  # 函数表达式占位符")
+  // 为闭包生成一个唯一的函数名
+  let closure_name = "closure_" + self.label_counter.to_string()
+  self.label_counter = self.label_counter + 1
+
+  // 生成闭包函数
+  self.emit_line("")
+  self.emit_line("minimbt_" + closure_name + ":")
+  self.emit_line("  # 闭包函数")
+  self.emit_line("  addi sp, sp, -16")
+  self.emit_line("  sd ra, 8(sp)")
+  self.emit_line("  sd fp, 0(sp)")
+  self.emit_line("  mv fp, sp")
+
+  // 处理参数
+  for i = 0; i < params.length() && i < 8; i = i + 1 {
+    self.stack_offset = self.stack_offset - 8
+    self.emit_line("  addi sp, sp, -8")
+    self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
+    self.function_params.set(params[i].0, self.stack_offset)
+  }
+
+  // 生成函数体
+  self.current_return_label = self.new_label("closure_return")
+  self.generate_expression(body)
+  self.emit_line(self.current_return_label + ":")
+
+  // 恢复栈帧
+  if params.length() > 0 && params.length() <= 8 {
+    self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
+  }
+  self.emit_line("  ld ra, 8(sp)")
+  self.emit_line("  ld fp, 0(sp)")
+  self.emit_line("  addi sp, sp, 16")
+  self.emit_line("  ret")
+  self.emit_line("")
+
+  // 返回闭包函数的地址
+  self.emit_line("  la a0, minimbt_" + closure_name)
 }
 
 ///|

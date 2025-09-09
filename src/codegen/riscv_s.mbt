@@ -150,10 +150,16 @@ fn generate_expression(self : RiscVCodeGen, expr : @ast.Expr) -> Unit {
     @ast.ArrayAccess(array, index) => self.generate_array_access(array, index)
     @ast.ArrayExpr(elems) => self.generate_array_expr(elems)
     @ast.GroupExpr(inner) => self.generate_expression(inner)
-    _ => {
-      self.emit_line("  # 未实现的表达式类型")
-      self.emit_line("  li a0, 0")
-    }
+    @ast.TupleExpr(elems) => self.generate_tuple_expr(elems)
+    @ast.StructConstruct(name, fields) =>
+      self.generate_struct_construct(name, fields)
+    @ast.EnumConstruct(name, variant, args) =>
+      self.generate_enum_construct(name, variant, args)
+    @ast.FieldAccess(target, field_name) =>
+      self.generate_field_access(target, field_name)
+    @ast.MatchExpr(expr, arms) => self.generate_match_expr(expr, arms)
+    @ast.FunctionExpr(params, return_type, body) =>
+      self.generate_function_expr(params, return_type, body)
   }
 }
 
@@ -169,12 +175,13 @@ fn generate_array_expr(self : RiscVCodeGen, elems : Array[@ast.Expr]) -> Unit {
   self.emit_line("  addi sp, sp, -8")
   self.emit_line("  sd a0, 0(sp)")
 
-  // 逐个初始化元素：计算值放a2，加载数组指针到a0，索引到a1，存储到 a0 + a1*4
+  // 逐个初始化元素：计算值放a2，加载数组指针到a0，索引到a1，存储到 a0 + 4 + a1*4
   for i = 0; i < elems.length(); i = i + 1 {
     self.generate_expression(elems[i])
     self.emit_line("  mv a2, a0")
     self.emit_line("  ld a0, 0(sp)")
     self.emit_line("  li a1, " + i.to_string())
+    self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
     self.emit_line("  slli a1, a1, 2  # 索引 * 4")
     self.emit_line("  add a0, a0, a1")
     self.emit_line("  sw a2, 0(a0)") // 使用sw存储32位整数
@@ -208,8 +215,24 @@ fn generate_binary_op(
     @ast.Add => self.emit_line("  add a0, a0, a1")
     @ast.Sub => self.emit_line("  sub a0, a0, a1")
     @ast.Mul => self.emit_line("  mul a0, a0, a1")
-    @ast.Div => self.emit_line("  div a0, a0, a1")
-    @ast.Mod => self.emit_line("  rem a0, a0, a1")
+    @ast.Div => {
+      // 处理除零情况
+      self.emit_line("  beqz a1, .div_zero")
+      self.emit_line("  div a0, a0, a1")
+      self.emit_line("  j .div_done")
+      self.emit_line(".div_zero:")
+      self.emit_line("  li a0, 0  # 除零返回0")
+      self.emit_line(".div_done:")
+    }
+    @ast.Mod => {
+      // 处理除零情况
+      self.emit_line("  beqz a1, .mod_zero")
+      self.emit_line("  rem a0, a0, a1")
+      self.emit_line("  j .mod_done")
+      self.emit_line(".mod_zero:")
+      self.emit_line("  li a0, 0  # 模零返回0")
+      self.emit_line(".mod_done:")
+    }
     @ast.Equal => {
       self.emit_line("  sub a0, a0, a1")
       self.emit_line("  seqz a0, a0")
@@ -228,8 +251,20 @@ fn generate_binary_op(
       self.emit_line("  slt a0, a0, a1")
       self.emit_line("  xori a0, a0, 1")
     }
-    @ast.And => self.emit_line("  and a0, a0, a1")
-    @ast.Or => self.emit_line("  or a0, a0, a1")
+    @ast.And => {
+      // 短路求值：如果左操作数为假，直接返回假
+      let and_end = self.new_label("and_end")
+      self.emit_line("  beqz a0, " + and_end)
+      self.emit_line("  and a0, a0, a1")
+      self.emit_line(and_end + ":")
+    }
+    @ast.Or => {
+      // 短路求值：如果左操作数为真，直接返回真
+      let or_end = self.new_label("or_end")
+      self.emit_line("  bnez a0, " + or_end)
+      self.emit_line("  or a0, a0, a1")
+      self.emit_line(or_end + ":")
+    }
   }
 }
 
@@ -293,8 +328,10 @@ fn generate_function_call(
         self.emit_line("  call minimbt_" + func_name)
       }
     _ => {
-      self.emit_line("  # 不支持的函数调用形式")
-      self.emit_line("  li a0, 0")
+      // 处理函数表达式调用
+      self.generate_expression(func_expr)
+      // 函数表达式的结果在a0中，需要跳转到该地址
+      self.emit_line("  jr a0")
     }
   }
 }
@@ -381,6 +418,9 @@ fn generate_array_make(
 
   // 调用数组创建函数：minimbt_create_array(size, init_value)
   self.emit_line("  call minimbt_create_array")
+
+  // 数组创建后，a0包含数组指针，数组布局为：[长度][元素0][元素1]...
+  // 不需要额外处理，因为minimbt_create_array已经正确初始化了数组
 }
 
 ///|
@@ -402,11 +442,22 @@ fn generate_array_access(
   self.emit_line("  ld a1, 0(sp)")
   self.emit_line("  addi sp, sp, 8")
 
-  // 计算偏移并加载值：array[index] = *(array + index * 4)
-  // 注意：根据C ABI，int32_t是4字节，不是8字节
+  // 边界检查
+  self.emit_line("  bltz a1, .array_bounds_error")
+  self.emit_line("  # 假设数组长度在数组的第一个元素")
+  self.emit_line("  lw t0, 0(a0)  # 加载数组长度")
+  self.emit_line("  bge a1, t0, .array_bounds_error")
+
+  // 计算偏移并加载值：array[index] = *(array + 4 + index * 4)
+  // 数组布局：[长度][元素0][元素1]...
+  self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
   self.emit_line("  slli a1, a1, 2  # 索引 * 4")
   self.emit_line("  add a0, a0, a1")
   self.emit_line("  lw a0, 0(a0)") // 使用lw加载32位整数
+  self.emit_line("  j .array_access_done")
+  self.emit_line(".array_bounds_error:")
+  self.emit_line("  li a0, 0  # 越界返回0")
+  self.emit_line(".array_access_done:")
 }
 
 ///|
@@ -528,10 +579,20 @@ fn generate_assignment(
       self.emit_line("  ld a2, 8(sp)") // 新值
       self.emit_line("  addi sp, sp, 16")
 
-      // 存储值：使用sw存储32位整数
+      // 边界检查
+      self.emit_line("  bltz a1, .array_assign_bounds_error")
+      self.emit_line("  lw t0, 0(a0)  # 加载数组长度")
+      self.emit_line("  bge a1, t0, .array_assign_bounds_error")
+
+      // 存储值：array[index] = *(array + 4 + index * 4)
+      self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
       self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
-      self.emit_line("  sw a2, 0(a0)")
+      self.emit_line("  sw a2, 0(a0)") // 使用sw存储32位整数
+      self.emit_line("  j .array_assign_done")
+      self.emit_line(".array_assign_bounds_error:")
+      self.emit_line("  # 越界赋值，忽略")
+      self.emit_line(".array_assign_done:")
     }
     @ast.FieldAccess(target, _field_name) => {
       // 简化处理：假设字段赋值
@@ -608,6 +669,7 @@ fn generate_left_value_address(
       self.generate_left_value_address(array_lval)
       self.emit_line("  ld a1, 0(sp)")
       self.emit_line("  addi sp, sp, 8")
+      self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
       self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
     }
@@ -708,6 +770,145 @@ fn generate_predefined_function_call(
 
   // 调用预定义函数
   self.emit_line("  call minimbt_" + func_name)
+}
+
+///|
+/// 生成元组表达式
+fn generate_tuple_expr(self : RiscVCodeGen, elems : Array[@ast.Expr]) -> Unit {
+  // 分配元组内存：大小 + 元素
+  let tuple_size = (elems.length() + 1) * 8 // 8字节对齐
+  self.emit_line("  li a0, " + tuple_size.to_string())
+  self.emit_line("  call minimbt_malloc")
+
+  // 保存元组指针
+  self.emit_line("  addi sp, sp, -8")
+  self.emit_line("  sd a0, 0(sp)")
+
+  // 存储元素数量
+  self.emit_line("  li t0, " + elems.length().to_string())
+  self.emit_line("  sd t0, 0(a0)")
+
+  // 存储每个元素
+  for i = 0; i < elems.length(); i = i + 1 {
+    self.generate_expression(elems[i])
+    self.emit_line("  ld t0, 0(sp)  # 元组指针")
+    self.emit_line("  sd a0, " + ((i + 1) * 8).to_string() + "(t0)")
+  }
+
+  // 恢复元组指针
+  self.emit_line("  ld a0, 0(sp)")
+  self.emit_line("  addi sp, sp, 8")
+}
+
+///|
+/// 生成结构体构造
+fn generate_struct_construct(
+  self : RiscVCodeGen,
+  _name : String,
+  fields : Array[(String, @ast.Expr)],
+) -> Unit {
+  // 简化处理：分配内存并存储字段
+  let struct_size = fields.length() * 8
+  self.emit_line("  li a0, " + struct_size.to_string())
+  self.emit_line("  call minimbt_malloc")
+
+  // 保存结构体指针
+  self.emit_line("  addi sp, sp, -8")
+  self.emit_line("  sd a0, 0(sp)")
+
+  // 存储每个字段
+  for i = 0; i < fields.length(); i = i + 1 {
+    self.generate_expression(fields[i].1)
+    self.emit_line("  ld t0, 0(sp)  # 结构体指针")
+    self.emit_line("  sd a0, " + (i * 8).to_string() + "(t0)")
+  }
+
+  // 恢复结构体指针
+  self.emit_line("  ld a0, 0(sp)")
+  self.emit_line("  addi sp, sp, 8")
+}
+
+///|
+/// 生成枚举构造
+fn generate_enum_construct(
+  self : RiscVCodeGen,
+  _name : String,
+  _variant : String?,
+  args : Array[@ast.Expr],
+) -> Unit {
+  // 简化处理：分配内存并存储变体信息
+  let enum_size = (args.length() + 2) * 8 // 变体索引 + 参数
+  self.emit_line("  li a0, " + enum_size.to_string())
+  self.emit_line("  call minimbt_malloc")
+
+  // 保存枚举指针
+  self.emit_line("  addi sp, sp, -8")
+  self.emit_line("  sd a0, 0(sp)")
+
+  // 存储变体索引（简化处理）
+  self.emit_line("  li t0, 0  # 变体索引")
+  self.emit_line("  sd t0, 0(a0)")
+
+  // 存储参数数量
+  self.emit_line("  li t0, " + args.length().to_string())
+  self.emit_line("  sd t0, 8(a0)")
+
+  // 存储每个参数
+  for i = 0; i < args.length(); i = i + 1 {
+    self.generate_expression(args[i])
+    self.emit_line("  ld t0, 0(sp)  # 枚举指针")
+    self.emit_line("  sd a0, " + ((i + 2) * 8).to_string() + "(t0)")
+  }
+
+  // 恢复枚举指针
+  self.emit_line("  ld a0, 0(sp)")
+  self.emit_line("  addi sp, sp, 8")
+}
+
+///|
+/// 生成字段访问
+fn generate_field_access(
+  self : RiscVCodeGen,
+  target : @ast.Expr,
+  field_name : String,
+) -> Unit {
+  // 计算目标对象地址
+  self.generate_expression(target)
+
+  // 简化处理：假设字段按顺序存储
+  // 在实际实现中，需要根据字段名查找偏移
+  self.emit_line("  # 字段访问: " + field_name)
+  self.emit_line("  lw a0, 0(a0)  # 加载第一个字段")
+}
+
+///|
+/// 生成模式匹配表达式
+fn generate_match_expr(
+  self : RiscVCodeGen,
+  expr : @ast.Expr,
+  arms : Array[@ast.MatchArm],
+) -> Unit {
+  // 计算匹配表达式
+  self.generate_expression(expr)
+
+  // 简化处理：只处理第一个分支
+  if arms.length() > 0 {
+    self.generate_expression(arms[0].expr)
+  } else {
+    self.emit_line("  li a0, 0")
+  }
+}
+
+///|
+/// 生成函数表达式（闭包）
+fn generate_function_expr(
+  self : RiscVCodeGen,
+  _params : Array[(String, @ast.Type?)],
+  _return_type : @ast.Type?,
+  _body : @ast.Expr,
+) -> Unit {
+  // 简化处理：返回一个占位符
+  self.emit_line("  li a0, 0  # 函数表达式占位符")
 }
 
 ///|

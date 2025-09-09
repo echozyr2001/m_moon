@@ -48,18 +48,18 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
   match decl {
     @ast.MainFnDecl(body) => {
       self.emit_line("minimbt_main:")
-      self.emit_line("  # 保存返回地址和帧指针")
+      self.emit_line("  # 设置栈帧")
       self.emit_line("  addi sp, sp, -16")
       self.emit_line("  sd ra, 8(sp)")
       self.emit_line("  sd fp, 0(sp)")
-      self.emit_line("  addi fp, sp, 16")
+      self.emit_line("  mv fp, sp")
       self.stack_offset = 0
       self.local_vars.clear()
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
       self.emit_line(self.current_return_label + ":")
-      self.emit_line("  # 恢复返回地址和帧指针")
+      self.emit_line("  # 恢复栈帧")
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
       self.emit_line("  addi sp, sp, 16")
@@ -74,39 +74,30 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       ()
     @ast.TopFnDecl(_generic_param, name, params, _return_type, body) => {
       self.emit_line("minimbt_" + name + ":")
-      self.emit_line("  # 保存返回地址和帧指针")
+      self.emit_line("  # 设置栈帧")
       self.emit_line("  addi sp, sp, -16")
       self.emit_line("  sd ra, 8(sp)")
       self.emit_line("  sd fp, 0(sp)")
-      self.emit_line("  addi fp, sp, 16")
+      self.emit_line("  mv fp, sp")
       self.stack_offset = 0
       self.local_vars.clear()
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
 
-      // 保存参数到栈上 (前8个参数使用a0-a7寄存器)
-      if params.length() > 0 {
-        let param_stack_size = params.length() * 8
-        self.emit_line("  # 保存参数到栈上")
-        self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
-        for i = 0; i < params.length() && i < 8; i = i + 1 {
-          self.emit_line(
-            "  sd a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
-          )
-          // 保存参数相对于帧指针的偏移：fp - 16 (ra+fp) - 8*i - 8
-          let param_offset = -16 - param_stack_size + i * 8
-          self.function_params.set(params[i].0, param_offset)
-        }
+      // 简化参数处理：只处理前8个参数，保存到栈上
+      for i = 0; i < params.length() && i < 8; i = i + 1 {
+        self.stack_offset = self.stack_offset - 8
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
+        self.function_params.set(params[i].0, self.stack_offset)
       }
       self.generate_expression(body)
-      // 恢复参数栈空间
-      if params.length() > 0 {
-        let param_stack_size = params.length() * 8
-        self.emit_line("  # 恢复参数栈空间")
-        self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
-      }
       self.emit_line(self.current_return_label + ":")
-      self.emit_line("  # 恢复返回地址和帧指针")
+      // 恢复栈指针到参数保存前的位置  
+      if params.length() > 0 && params.length() <= 8 {
+        self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
+      }
+      self.emit_line("  # 恢复栈帧")
       self.emit_line("  ld ra, 8(sp)")
       self.emit_line("  ld fp, 0(sp)")
       self.emit_line("  addi sp, sp, 16")
@@ -178,15 +169,15 @@ fn generate_array_expr(self : RiscVCodeGen, elems : Array[@ast.Expr]) -> Unit {
   self.emit_line("  addi sp, sp, -8")
   self.emit_line("  sd a0, 0(sp)")
 
-  // 逐个初始化元素：计算值放a2，加载数组指针到a0，索引到a1，存储到 a0 + a1*8
+  // 逐个初始化元素：计算值放a2，加载数组指针到a0，索引到a1，存储到 a0 + a1*4
   for i = 0; i < elems.length(); i = i + 1 {
     self.generate_expression(elems[i])
     self.emit_line("  mv a2, a0")
     self.emit_line("  ld a0, 0(sp)")
     self.emit_line("  li a1, " + i.to_string())
-    self.emit_line("  slli a1, a1, 3")
+    self.emit_line("  slli a1, a1, 2  # 索引 * 4")
     self.emit_line("  add a0, a0, a1")
-    self.emit_line("  sd a2, 0(a0)")
+    self.emit_line("  sw a2, 0(a0)") // 使用sw存储32位整数
   }
 
   // 恢复数组指针到a0作为结果
@@ -269,47 +260,37 @@ fn generate_function_call(
       if is_predefined_function(self, func_name) {
         self.generate_predefined_function_call(func_name, args)
       } else {
-        // 保存调用者保存的寄存器（不覆盖a0，保留返回值寄存器）
-        self.emit_line("  # 保存调用者保存的寄存器 a1-a7")
-        self.emit_line("  addi sp, sp, -56")
-        for i = 1; i < 8; i = i + 1 {
-          self.emit_line(
-            "  sd a" + i.to_string() + ", " + ((i - 1) * 8).to_string() + "(sp)",
-          )
+        // 简化的函数调用：只处理前8个参数
+        if args.length() > 8 {
+          self.emit_line("  # 超过8个参数，简化处理")
+          self.emit_line("  li a0, 0")
+          return
         }
 
-        // 计算参数并放入寄存器 (修复多参数问题)
-        if args.length() > 1 {
-          // 先将所有参数计算结果保存到栈上
-          let param_stack_size = args.length() * 8
-          self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
-          for i = 0; i < args.length() && i < 8; i = i + 1 {
+        // 保存调用者使用的寄存器 (只保存可能被破坏的寄存器)
+        if args.length() > 0 {
+          self.emit_line("  # 保存寄存器并计算参数")
+          // 先计算所有参数并临时保存
+          for i = 0; i < args.length(); i = i + 1 {
             self.generate_expression(args[i])
-            self.emit_line("  sd a0, " + (i * 8).to_string() + "(sp)")
+            self.emit_line("  addi sp, sp, -8")
+            self.emit_line("  sd a0, 0(sp)")
           }
 
-          // 从栈上加载到正确的寄存器
-          for i = 0; i < args.length() && i < 8; i = i + 1 {
+          // 从栈上加载参数到寄存器
+          for i = 0; i < args.length(); i = i + 1 {
+            let stack_pos = (args.length() - 1 - i) * 8
             self.emit_line(
-              "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
+              "  ld a" + i.to_string() + ", " + stack_pos.to_string() + "(sp)",
             )
           }
-          self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
-        } else if args.length() == 1 {
-          self.generate_expression(args[0])
+
+          // 清理参数栈空间
+          self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
         }
 
         // 调用函数
         self.emit_line("  call minimbt_" + func_name)
-
-        // 恢复调用者保存的寄存器 a1-a7
-        self.emit_line("  # 恢复调用者保存的寄存器 a1-a7")
-        for i = 1; i < 8; i = i + 1 {
-          self.emit_line(
-            "  ld a" + i.to_string() + ", " + ((i - 1) * 8).to_string() + "(sp)",
-          )
-        }
-        self.emit_line("  addi sp, sp, 56")
       }
     _ => {
       self.emit_line("  # 不支持的函数调用形式")
@@ -386,16 +367,19 @@ fn generate_array_make(
   size : @ast.Expr,
   init_value : @ast.Expr,
 ) -> Unit {
-  // 计算初始值
+  // 计算初始值并保存
   self.generate_expression(init_value)
-  self.emit_line("  mv a1, a0")
+  self.emit_line("  addi sp, sp, -8")
+  self.emit_line("  sd a0, 0(sp)")
 
   // 计算大小
   self.generate_expression(size)
 
-  // 根据初始值类型调用相应的数组创建函数
-  // 这里简化处理，假设都是整数数组
-  // 在实际实现中，应该根据类型系统选择正确的函数
+  // 恢复初始值到a1
+  self.emit_line("  ld a1, 0(sp)")
+  self.emit_line("  addi sp, sp, 8")
+
+  // 调用数组创建函数：minimbt_create_array(size, init_value)
   self.emit_line("  call minimbt_create_array")
 }
 
@@ -418,10 +402,11 @@ fn generate_array_access(
   self.emit_line("  ld a1, 0(sp)")
   self.emit_line("  addi sp, sp, 8")
 
-  // 计算偏移并加载值
-  self.emit_line("  slli a1, a1, 3  # 索引 * 8")
+  // 计算偏移并加载值：array[index] = *(array + index * 4)
+  // 注意：根据C ABI，int32_t是4字节，不是8字节
+  self.emit_line("  slli a1, a1, 2  # 索引 * 4")
   self.emit_line("  add a0, a0, a1")
-  self.emit_line("  ld a0, 0(a0)")
+  self.emit_line("  lw a0, 0(a0)") // 使用lw加载32位整数
 }
 
 ///|
@@ -503,6 +488,19 @@ fn generate_assignment(
   match target {
     @ast.Variable(name) => {
       self.generate_expression(expr)
+
+      // 检查是否是函数参数
+      match self.function_params.get(name) {
+        Some(offset) => {
+          // 参数在当前函数栈上
+          let stack_pos = offset - self.stack_offset
+          self.emit_line("  sd a0, " + stack_pos.to_string() + "(sp)")
+          return
+        }
+        None => ()
+      }
+
+      // 检查是否是局部变量
       match self.local_vars.get(name) {
         Some(offset) => {
           let stack_pos = offset - self.stack_offset
@@ -530,10 +528,10 @@ fn generate_assignment(
       self.emit_line("  ld a2, 8(sp)") // 新值
       self.emit_line("  addi sp, sp, 16")
 
-      // 存储值
-      self.emit_line("  slli a1, a1, 3")
+      // 存储值：使用sw存储32位整数
+      self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
-      self.emit_line("  sd a2, 0(a0)")
+      self.emit_line("  sw a2, 0(a0)")
     }
     @ast.FieldAccess(target, _field_name) => {
       // 简化处理：假设字段赋值
@@ -578,7 +576,19 @@ fn generate_left_value_address(
   lval : @ast.LeftValue,
 ) -> Unit {
   match lval {
-    @ast.Variable(name) =>
+    @ast.Variable(name) => {
+      // 检查是否是函数参数
+      match self.function_params.get(name) {
+        Some(offset) => {
+          // 参数在当前函数栈上
+          let stack_pos = offset - self.stack_offset
+          self.emit_line("  addi a0, sp, " + stack_pos.to_string())
+          return
+        }
+        None => ()
+      }
+
+      // 检查是否是局部变量
       match self.local_vars.get(name) {
         Some(offset) => {
           let stack_pos = offset - self.stack_offset
@@ -589,6 +599,7 @@ fn generate_left_value_address(
           self.emit_line("  li a0, 0")
         }
       }
+    }
     @ast.ArrayAccess(array_lval, index) => {
       // 递归处理数组访问
       self.generate_expression(index)
@@ -597,7 +608,7 @@ fn generate_left_value_address(
       self.generate_left_value_address(array_lval)
       self.emit_line("  ld a1, 0(sp)")
       self.emit_line("  addi sp, sp, 8")
-      self.emit_line("  slli a1, a1, 3")
+      self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
     }
     @ast.FieldAccess(target, field_name) => {
@@ -613,9 +624,10 @@ fn generate_left_value_address(
 fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
   // 检查是否是函数参数
   match self.function_params.get(name) {
-    Some(fp_offset) => {
-      // 使用帧指针访问参数
-      self.emit_line("  ld a0, " + fp_offset.to_string() + "(fp)")
+    Some(offset) => {
+      // 参数保存在当前函数栈上，使用相对于sp的偏移
+      let stack_pos = offset - self.stack_offset
+      self.emit_line("  ld a0, " + stack_pos.to_string() + "(sp)")
       return
     }
     None => ()
@@ -676,30 +688,22 @@ fn generate_predefined_function_call(
   func_name : String,
   args : Array[@ast.Expr],
 ) -> Unit {
-  // 如果有多个参数，需要保存之前计算的结果
-  if args.length() > 1 {
-    // 为参数预分配栈空间
-    let param_stack_size = args.length() * 8
-    self.emit_line("  addi sp, sp, -" + param_stack_size.to_string())
-
-    // 计算所有参数并保存到栈上
-    for i = 0; i < args.length() && i < 8; i = i + 1 {
+  // 计算参数并放入正确的寄存器
+  if args.length() > 0 {
+    // 临时保存参数
+    self.emit_line("  addi sp, sp, -" + (args.length() * 8).to_string())
+    for i = 0; i < args.length(); i = i + 1 {
       self.generate_expression(args[i])
       self.emit_line("  sd a0, " + (i * 8).to_string() + "(sp)")
     }
 
-    // 从栈上加载到寄存器
+    // 加载参数到寄存器
     for i = 0; i < args.length() && i < 8; i = i + 1 {
       self.emit_line(
         "  ld a" + i.to_string() + ", " + (i * 8).to_string() + "(sp)",
       )
     }
-
-    // 恢复栈空间
-    self.emit_line("  addi sp, sp, " + param_stack_size.to_string())
-  } else if args.length() == 1 {
-    // 单参数情况
-    self.generate_expression(args[0])
+    self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
   }
 
   // 调用预定义函数

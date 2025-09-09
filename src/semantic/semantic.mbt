@@ -130,10 +130,10 @@ fn analyze_program_internal(
         }
         self.scopes[0].functions.set(name, func_type)
       }
-      @ast.MainFnDecl(_) => {
-        let func_type = FunctionType::{ params: [], return_type: Unit }
-        self.scopes[0].functions.set("main", func_type)
-      }
+      @ast.MainFnDecl(_) =>
+        // main 函数可以返回 Int 或 Unit，这里不预先设置返回类型
+        // 返回类型将在分析函数体时确定
+        ()
       _ => ()
     }
   }
@@ -182,8 +182,10 @@ fn analyze_declaration(self : SemanticAnalyzer, decl : @ast.TopLevel) -> Unit {
       self.current_function = Some("main")
       self.push_scope()
       let actual_return = self.analyze_expression(body)
-      if not(self.types_compatible(actual_return, Unit)) {
-        self.add_error("main 函数必须返回 Unit 类型")
+      // 允许 main 函数返回 Int 或 Unit 类型
+      if not(self.types_compatible(actual_return, Unit)) &&
+        not(self.types_compatible(actual_return, Int)) {
+        self.add_error("main 函数必须返回 Unit 或 Int 类型")
       }
       self.pop_scope()
       self.current_function = None

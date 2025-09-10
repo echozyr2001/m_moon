@@ -269,6 +269,47 @@ pub fn parse_type(self : Parser) -> @ast.Type? {
           None
       }
     }
+    Function => {
+      // 解析 Function([Type, Type], Type) 语法
+      self.advance_parser()
+      if !self.expect_token(LParen) {
+        return None
+      }
+      if !self.expect_token(LBracket) {
+        return None
+      }
+      let param_types = []
+      if self.current_token() != RBracket {
+        match self.parse_type() {
+          Some(first_type) => {
+            param_types.push(first_type)
+            while self.current_token() == Comma {
+              self.advance_parser()
+              match self.parse_type() {
+                Some(t) => param_types.push(t)
+                None => return None
+              }
+            }
+          }
+          None => return None
+        }
+      }
+      if !self.expect_token(RBracket) {
+        return None
+      }
+      if !self.expect_token(Comma) {
+        return None
+      }
+      match self.parse_type() {
+        Some(return_type) =>
+          if self.expect_token(RParen) {
+            Some(@ast.FunctionType(param_types, return_type))
+          } else {
+            None
+          }
+        None => None
+      }
+    }
     LParen => {
       // println("Debug: Parsing tuple type")
       self.advance_parser()

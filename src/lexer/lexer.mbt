@@ -113,6 +113,7 @@ fn keyword_or_identifier(word : String) -> Token {
     "Int" => Int
     "Double" => Double
     "Array" => Array
+    "Function" => Function
     "not" => Not
     "if" => If
     "else" => Else

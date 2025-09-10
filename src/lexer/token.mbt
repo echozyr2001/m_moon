@@ -9,6 +9,7 @@ pub(all) enum Token {
   Int
   Double
   Array
+  Function
   Not
   If
   Else

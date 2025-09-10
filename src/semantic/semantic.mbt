@@ -419,7 +419,6 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
       self.analyze_unary_op(op, expr_type)
     }
     @ast.FunctionCall(func_expr, args) =>
-      // 简化处理：假设func_expr是Identifier
       match func_expr {
         @ast.Identifier(name) =>
           match self.lookup_function(name) {
@@ -446,14 +445,77 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
               }
               func_type.return_type
             }
-            None => {
-              self.add_error("未定义的函数: " + name)
+            None =>
+              // 如果不是函数，检查是否是存储函数类型的变量
+              match self.lookup_variable(name) {
+                Some(var_info) =>
+                  match var_info.var_type {
+                    Function(param_types, return_type) => {
+                      if args.length() != param_types.length() {
+                        self.add_error(
+                          "函数变量 '" + name + "' 参数数量不匹配",
+                        )
+                        return Unit
+                      }
+                      for i = 0; i < args.length(); i = i + 1 {
+                        let arg_type = self.analyze_expression(args[i])
+                        let expected_type = param_types[i]
+                        if not(self.types_compatible(arg_type, expected_type)) {
+                          self.add_error(
+                            "函数变量 '" +
+                            name +
+                            "' 第 " +
+                            (i + 1).to_string() +
+                            " 个参数类型不匹配，期望 " +
+                            expected_type.to_string() +
+                            "，实际 " +
+                            arg_type.to_string(),
+                          )
+                        }
+                      }
+                      return_type
+                    }
+                    _ => {
+                      self.add_error("变量 '" + name + "' 不是函数类型")
+                      Unit
+                    }
+                  }
+                None => {
+                  self.add_error("未定义的函数或变量: " + name)
+                  Unit
+                }
+              }
+          }
+        _ => {
+          // 处理函数表达式调用
+          let func_type = self.analyze_expression(func_expr)
+          match func_type {
+            Function(param_types, return_type) => {
+              if args.length() != param_types.length() {
+                self.add_error("函数调用参数数量不匹配")
+                return Unit
+              }
+              for i = 0; i < args.length(); i = i + 1 {
+                let arg_type = self.analyze_expression(args[i])
+                let expected_type = param_types[i]
+                if not(self.types_compatible(arg_type, expected_type)) {
+                  self.add_error(
+                    "函数调用第 " +
+                    (i + 1).to_string() +
+                    " 个参数类型不匹配，期望 " +
+                    expected_type.to_string() +
+                    "，实际 " +
+                    arg_type.to_string(),
+                  )
+                }
+              }
+              return_type
+            }
+            _ => {
+              self.add_error("只能调用函数类型的表达式")
               Unit
             }
           }
-        _ => {
-          self.add_error("不支持的函数调用形式")
-          Unit
         }
       }
     @ast.ArrayAccess(array, index) => {
@@ -579,7 +641,7 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
         }
       }
       // 分析函数体
-      let _body_type = self.analyze_expression(body)
+      let body_type = self.analyze_expression(body)
       self.pop_scope()
 
       // 返回函数类型
@@ -595,14 +657,14 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
           Function(param_types, return_type_val)
         }
         None => {
-          // 没有返回类型注解，假设返回Unit
+          // 没有返回类型注解，从函数体推断
           let param_types = params.map(fn(p) {
             match p.1 {
               Some(t) => self.ast_type_to_type(t)
               None => Int // 默认参数类型
             }
           })
-          Function(param_types, Unit)
+          Function(param_types, body_type)
         }
       }
     }

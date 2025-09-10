@@ -63,11 +63,8 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
-      // 调用 print_int 输出结果，结果应该在 a0 中
-      self.emit_line("  # 输出结果")
-      self.emit_line("  call minimbt_print_int")
-      // 调用 print_endline 换行
-      self.emit_line("  call minimbt_print_endline")
+      // 主函数执行完毕后不设置任何返回值，让a0保持不确定状态
+      // 或者我们可以尝试不修改a0
       self.emit_line(self.current_return_label + ":")
       self.emit_line("  # 恢复栈帧")
       self.emit_line("  mv sp, fp")
@@ -99,9 +96,9 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
 
       // 处理函数参数：参数在寄存器a0-a7中，需要保存到栈上
       for i = 0; i < params.length() && i < 8; i = i + 1 {
-        self.stack_offset = self.stack_offset - 8
         self.emit_line("  addi sp, sp, -8")
         self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
+        self.stack_offset = self.stack_offset - 8
         self.function_params.set(params[i].0, self.stack_offset)
       }
       self.generate_expression(body)

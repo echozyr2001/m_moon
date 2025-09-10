@@ -40,6 +40,9 @@ fn emit_header(self : RiscVCodeGen) -> Unit {
   self.emit_line(".text")
   self.emit_line(".global minimbt_main")
   self.emit_line("")
+
+  // 添加运行时函数
+  self.emit_runtime_functions()
 }
 
 ///|
@@ -53,7 +56,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.emit_line("  sd ra, 8(sp)")
       self.emit_line("  sd fp, 0(sp)")
       self.emit_line("  mv fp, sp")
-      self.stack_offset = 0
+      self.stack_offset = -16 // 栈偏移从-16开始
       self.local_vars.clear()
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
@@ -82,7 +85,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.emit_line("  sd ra, 8(sp)")
       self.emit_line("  sd fp, 0(sp)")
       self.emit_line("  mv fp, sp")
-      self.stack_offset = 0
+      self.stack_offset = -16 // 栈偏移从-16开始
       self.local_vars.clear()
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
@@ -313,34 +316,18 @@ fn generate_function_call(
           return
         }
 
-        // 简单直接的参数传递：依次计算参数并放入寄存器
-        match args.length() {
-          0 => ()
-          1 => self.generate_expression(args[0])
-          // a0 已经包含第一个参数
-          2 => {
-            // 先计算第二个参数并保存
-            self.generate_expression(args[1])
-            self.emit_line("  mv a1, a0")
-            // 计算第一个参数
-            self.generate_expression(args[0])
-            // a0 包含第一个参数，a1 包含第二个参数
-          }
-          _ => {
-            // 对于更多参数，使用栈保存
-            for i = 0; i < args.length() && i < 8; i = i + 1 {
-              self.generate_expression(args[i])
-              self.emit_line("  addi sp, sp, -8")
-              self.emit_line("  sd a0, 0(sp)")
-            }
+        // 计算所有参数并保存到栈上
+        for i = 0; i < args.length() && i < 8; i = i + 1 {
+          self.generate_expression(args[i])
+          self.emit_line("  addi sp, sp, -8")
+          self.emit_line("  sd a0, 0(sp)")
+        }
 
-            // 从栈恢复到寄存器（逆序）
-            for i = 0; i < args.length() && i < 8; i = i + 1 {
-              let reg_index = args.length() - 1 - i
-              self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
-              self.emit_line("  addi sp, sp, 8")
-            }
-          }
+        // 从栈恢复到寄存器（逆序，确保参数顺序正确）
+        for i = 0; i < args.length() && i < 8; i = i + 1 {
+          let reg_index = args.length() - 1 - i
+          self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
+          self.emit_line("  addi sp, sp, 8")
         }
 
         // 调用函数
@@ -450,16 +437,17 @@ fn generate_array_make(
   size : @ast.Expr,
   init_value : @ast.Expr,
 ) -> Unit {
-  // 计算初始值并保存
-  self.generate_expression(init_value)
+  // 计算大小并保存
+  self.generate_expression(size)
   self.emit_line("  addi sp, sp, -8")
   self.emit_line("  sd a0, 0(sp)")
 
-  // 计算大小
-  self.generate_expression(size)
+  // 计算初始值
+  self.generate_expression(init_value)
+  self.emit_line("  mv a1, a0")
 
-  // 恢复初始值到a1
-  self.emit_line("  ld a1, 0(sp)")
+  // 恢复大小到a0
+  self.emit_line("  ld a0, 0(sp)")
   self.emit_line("  addi sp, sp, 8")
 
   // 调用数组创建函数：minimbt_create_array(size, init_value)
@@ -476,16 +464,17 @@ fn generate_array_access(
   array : @ast.Expr,
   index : @ast.Expr,
 ) -> Unit {
-  // 计算索引
-  self.generate_expression(index)
+  // 计算数组地址并保存
+  self.generate_expression(array)
   self.emit_line("  addi sp, sp, -8")
   self.emit_line("  sd a0, 0(sp)")
 
-  // 计算数组地址
-  self.generate_expression(array)
+  // 计算索引
+  self.generate_expression(index)
+  self.emit_line("  mv a1, a0")
 
-  // 恢复索引
-  self.emit_line("  ld a1, 0(sp)")
+  // 恢复数组地址
+  self.emit_line("  ld a0, 0(sp)")
   self.emit_line("  addi sp, sp, 8")
 
   // 边界检查
@@ -545,15 +534,32 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
     }
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
+      // 计算元组表达式
       self.generate_expression(expr)
-      // 简化处理：为每个变量分配栈空间
-      for binding in bindings {
-        match binding {
+
+      // 为每个绑定分配栈空间并存储值
+      for i = 0; i < bindings.length(); i = i + 1 {
+        match bindings[i] {
           @ast.Binding::Variable(name) => {
+            // 如果是第一个元素，直接使用当前a0的值
+            if i > 0 {
+              // 对于后续元素，需要从元组中加载
+              self.emit_line("  addi sp, sp, -8")
+              self.emit_line("  sd a0, 0(sp)") // 保存元组指针
+              self.emit_line("  ld a0, " + ((i + 1) * 8).to_string() + "(a0)") // 加载第i个元素
+            }
+
+            // 分配栈空间并保存值
             self.stack_offset = self.stack_offset - 8
             self.emit_line("  addi sp, sp, -8")
             self.emit_line("  sd a0, 0(sp)")
             self.local_vars.set(name, self.stack_offset)
+
+            // 如果不是最后一个元素，恢复元组指针
+            if i < bindings.length() - 1 {
+              self.emit_line("  ld a0, 8(sp)") // 恢复元组指针
+              self.emit_line("  addi sp, sp, 8")
+            }
           }
           @ast.Binding::Wildcard =>
             // 通配符不需要分配空间
@@ -609,12 +615,12 @@ fn generate_assignment(
       }
     }
     @ast.ArrayAccess(array_lval, index) => {
-      // 计算新值
+      // 计算新值并保存
       self.generate_expression(expr)
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
 
-      // 计算索引
+      // 计算索引并保存
       self.generate_expression(index)
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
@@ -714,13 +720,19 @@ fn generate_left_value_address(
       }
     }
     @ast.ArrayAccess(array_lval, index) => {
-      // 递归处理数组访问
+      // 计算索引并保存
       self.generate_expression(index)
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
+
+      // 计算数组地址
       self.generate_left_value_address(array_lval)
+
+      // 恢复索引
       self.emit_line("  ld a1, 0(sp)")
       self.emit_line("  addi sp, sp, 8")
+
+      // 计算最终地址
       self.emit_line("  addi a0, a0, 4  # 跳过长度字段")
       self.emit_line("  slli a1, a1, 2  # 索引 * 4")
       self.emit_line("  add a0, a0, a1")
@@ -757,9 +769,10 @@ fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
       self.emit_line("  ld a0, " + actual_offset.to_string() + "(sp)")
     }
     None => {
-      // 可能是全局变量或外部函数，尝试作为函数调用
-      self.emit_line("  # 加载全局变量或调用外部函数: " + name)
-      self.emit_line("  call minimbt_" + name)
+      // 可能是全局变量，尝试加载全局变量
+      self.emit_line("  # 加载全局变量: " + name)
+      self.emit_line("  la a0, minimbt_" + name)
+      self.emit_line("  ld a0, 0(a0)")
     }
   }
 }
@@ -805,34 +818,18 @@ fn generate_predefined_function_call(
   func_name : String,
   args : Array[@ast.Expr],
 ) -> Unit {
-  // 简单直接的参数传递
-  match args.length() {
-    0 => ()
-    1 => self.generate_expression(args[0])
-    // a0 已经包含参数
-    2 => {
-      // 先计算第二个参数并保存
-      self.generate_expression(args[1])
-      self.emit_line("  mv a1, a0")
-      // 计算第一个参数
-      self.generate_expression(args[0])
-      // a0 包含第一个参数，a1 包含第二个参数
-    }
-    _ => {
-      // 对于更多参数，使用栈
-      for i = 0; i < args.length() && i < 8; i = i + 1 {
-        self.generate_expression(args[i])
-        self.emit_line("  addi sp, sp, -8")
-        self.emit_line("  sd a0, 0(sp)")
-      }
+  // 计算所有参数并保存到栈上
+  for i = 0; i < args.length() && i < 8; i = i + 1 {
+    self.generate_expression(args[i])
+    self.emit_line("  addi sp, sp, -8")
+    self.emit_line("  sd a0, 0(sp)")
+  }
 
-      // 从栈恢复到寄存器（逆序）
-      for i = 0; i < args.length() && i < 8; i = i + 1 {
-        let reg_index = args.length() - 1 - i
-        self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
-        self.emit_line("  addi sp, sp, 8")
-      }
-    }
+  // 从栈恢复到寄存器（逆序，确保参数顺序正确）
+  for i = 0; i < args.length() && i < 8; i = i + 1 {
+    let reg_index = args.length() - 1 - i
+    self.emit_line("  ld a" + reg_index.to_string() + ", 0(sp)")
+    self.emit_line("  addi sp, sp, 8")
   }
 
   // 调用预定义函数
@@ -1018,6 +1015,55 @@ fn generate_function_expr(
 /// 输出一行汇编代码
 fn emit_line(self : RiscVCodeGen, line : String) -> Unit {
   self.output = self.output + line + "\n"
+}
+
+///|
+/// 生成运行时函数
+fn emit_runtime_functions(self : RiscVCodeGen) -> Unit {
+  // 内存分配函数
+  self.emit_line("minimbt_malloc:")
+  self.emit_line("  # 简化的malloc实现")
+  self.emit_line("  li a0, 0x10000000  # 返回固定地址")
+  self.emit_line("  ret")
+  self.emit_line("")
+
+  // 数组创建函数
+  self.emit_line("minimbt_create_array:")
+  self.emit_line("  # a0 = size, a1 = init_value")
+  self.emit_line("  # 保存参数")
+  self.emit_line("  addi sp, sp, -16")
+  self.emit_line("  sd a0, 0(sp)  # 保存size")
+  self.emit_line("  sd a1, 8(sp)  # 保存init_value")
+  self.emit_line("  # 分配内存：size * 4 + 4 (长度字段)")
+  self.emit_line("  addi t0, a0, 1  # size + 1")
+  self.emit_line("  slli t0, t0, 2  # (size + 1) * 4")
+  self.emit_line("  mv a0, t0")
+  self.emit_line("  call minimbt_malloc")
+  self.emit_line("  # 恢复参数")
+  self.emit_line("  ld t0, 0(sp)  # 恢复size")
+  self.emit_line("  ld t3, 8(sp)  # 恢复init_value")
+  self.emit_line("  addi sp, sp, 16")
+  self.emit_line("  # 存储长度")
+  self.emit_line("  sw t0, 0(a0)")
+  self.emit_line("  # 初始化所有元素")
+  self.emit_line("  addi t1, a0, 4  # 指向第一个元素")
+  self.emit_line("  mv t2, t0  # 计数器")
+  self.emit_line("init_loop:")
+  self.emit_line("  beqz t2, init_done")
+  self.emit_line("  sw t3, 0(t1)")
+  self.emit_line("  addi t1, t1, 4")
+  self.emit_line("  addi t2, t2, -1")
+  self.emit_line("  j init_loop")
+  self.emit_line("init_done:")
+  self.emit_line("  ret")
+  self.emit_line("")
+
+  // 打印整数函数
+  self.emit_line("minimbt_print_int:")
+  self.emit_line("  # a0 = 要打印的整数")
+  self.emit_line("  # 简化实现：直接返回")
+  self.emit_line("  ret")
+  self.emit_line("")
 }
 
 ///|

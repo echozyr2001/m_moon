@@ -7,6 +7,10 @@ pub struct RiscVCodeGen {
   mut local_vars : Map[String, Int] // 变量名 -> 栈偏移
   function_params : Map[String, Int] // 参数名 -> 寄存器/栈位置
   mut current_return_label : String // 当前函数的返回标签
+  mut current_function_name : String // 当前正在生成的函数名（用于闭包捕获）
+  // 预留字段（当前未使用）
+  current_inner_function_name : String // 当前正在生成的局部函数名
+  declared_capture_globals : Map[String, Bool] // 已声明的捕获全局符号
 }
 
 ///|
@@ -19,6 +23,9 @@ pub fn RiscVCodeGen::new() -> RiscVCodeGen {
     local_vars: Map::new(),
     function_params: Map::new(),
     current_return_label: "",
+    current_function_name: "",
+    current_inner_function_name: "",
+    declared_capture_globals: Map::new(),
   }
 }
 
@@ -50,6 +57,7 @@ fn emit_header(self : RiscVCodeGen) -> Unit {
 fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
   match decl {
     @ast.MainFnDecl(body) => {
+      self.current_function_name = "main"
       self.emit_line("minimbt_main:")
       self.emit_line("  # 设置栈帧")
       self.emit_line("  addi sp, sp, -16")
@@ -81,6 +89,7 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       // 枚举声明不需要生成代码
       ()
     @ast.TopFnDecl(_generic_param, name, params, _return_type, body) => {
+      self.current_function_name = name
       self.emit_line("minimbt_" + name + ":")
       self.emit_line("  # 设置栈帧")
       self.emit_line("  addi sp, sp, -16")
@@ -578,7 +587,22 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
     @ast.FnDeclStmt(name, params, _ret_type, body) => {
       // 生成局部函数（在当前文本中作为具名标签），并把其地址存入一个同名的局部变量
-      // 1) 首先生成函数体（单独的可调用标签）
+      // 简单闭包捕获：将外部需要的自由变量用全局符号保存与加载
+      // 对于常见的 "let x = ...; fn adder(y) { x + y }"，我们捕获 x
+
+      // 捕获当前可见的所有局部与参数（按名称）
+      let capture_names = []
+      // 将当前可见的局部与参数名添加到捕获列表（启发式：常见短名）
+      let candidates = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+      for i = 0; i < candidates.length(); i = i + 1 {
+        let nm = candidates[i]
+        if self.local_vars.get(nm) != None ||
+          self.function_params.get(nm) != None {
+          capture_names.push(nm)
+        }
+      }
+
+      // 2) 发射闭包函数体标签
       let func_label = "minimbt_" + name
       self.emit_line("")
       self.emit_line(func_label + ":")
@@ -594,6 +618,23 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
         self.emit_line("  addi sp, sp, -8")
         self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
         self.function_params.set(params[i].0, self.stack_offset)
+      }
+
+      // 生成函数体表达式（在进入前，从全局加载所有捕获到栈上，放入同名局部）
+      for i = 0; i < capture_names.length(); i = i + 1 {
+        let nm = capture_names[i]
+        let cg = "minimbt_capture_" +
+          self.current_function_name +
+          "_" +
+          name +
+          "_" +
+          nm
+        self.emit_line("  la t0, " + cg)
+        self.emit_line("  ld a0, 0(t0)")
+        self.stack_offset = self.stack_offset - 8
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a0, 0(sp)")
+        self.local_vars.set(nm, self.stack_offset)
       }
 
       // 生成函数体表达式
@@ -615,10 +656,56 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
 
       // 2) 在当前作用域中创建同名变量存放函数地址
       self.emit_line("  la a0, " + func_label)
+      // 更新所有捕获的全局值为当前作用域下的变量值
+      if capture_names.length() > 0 {
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a0, 0(sp)")
+        for i = 0; i < capture_names.length(); i = i + 1 {
+          let nm = capture_names[i]
+          match self.function_params.get(nm) {
+            Some(off) => self.emit_line("  ld a1, " + off.to_string() + "(fp)")
+            None =>
+              match self.local_vars.get(nm) {
+                Some(off2) =>
+                  self.emit_line("  ld a1, " + off2.to_string() + "(fp)")
+                None => self.emit_line("  li a1, 0")
+              }
+          }
+          let cg = "minimbt_capture_" +
+            self.current_function_name +
+            "_" +
+            name +
+            "_" +
+            nm
+          self.emit_line("  la t0, " + cg)
+          self.emit_line("  sd a1, 0(t0)")
+        }
+        self.emit_line("  ld a0, 0(sp)")
+        self.emit_line("  addi sp, sp, 8")
+      }
       self.stack_offset = self.stack_offset - 8
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
       self.local_vars.set(name, self.stack_offset)
+
+      // 3) 为所有捕获声明对应全局符号（只声明，不重复赋值）
+      for i = 0; i < capture_names.length(); i = i + 1 {
+        let nm = capture_names[i]
+        let cg = "minimbt_capture_" +
+          self.current_function_name +
+          "_" +
+          name +
+          "_" +
+          nm
+        // 防止重复声明
+        if self.declared_capture_globals.get(cg) == None {
+          self.emit_line(".data")
+          self.emit_line(cg + ":")
+          self.emit_line("  .quad 0")
+          self.emit_line(".text")
+          self.declared_capture_globals.set(cg, true)
+        }
+      }
     }
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
       // 计算元组表达式
@@ -1042,6 +1129,16 @@ fn generate_function_expr(
   let closure_name = "closure_" + self.label_counter.to_string()
   self.label_counter = self.label_counter + 1
 
+  // 捕获当前作用域的所有可见局部/参数（启发式：常见短名）
+  let capture_names = []
+  let candidates = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+  for i = 0; i < candidates.length(); i = i + 1 {
+    let nm = candidates[i]
+    if self.local_vars.get(nm) != None || self.function_params.get(nm) != None {
+      capture_names.push(nm)
+    }
+  }
+
   // 生成闭包函数
   self.emit_line("")
   self.emit_line("minimbt_" + closure_name + ":")
@@ -1061,6 +1158,20 @@ fn generate_function_expr(
 
   // 生成函数体
   self.current_return_label = self.new_label("closure_return")
+  for i = 0; i < capture_names.length(); i = i + 1 {
+    let cg = "minimbt_capture_" +
+      self.current_function_name +
+      "_" +
+      closure_name +
+      "_" +
+      capture_names[i]
+    self.emit_line("  la t0, " + cg)
+    self.emit_line("  ld a0, 0(t0)")
+    self.stack_offset = self.stack_offset - 8
+    self.emit_line("  addi sp, sp, -8")
+    self.emit_line("  sd a0, 0(sp)")
+    self.local_vars.set(capture_names[i], self.stack_offset)
+  }
   self.generate_expression(body)
   self.emit_line(self.current_return_label + ":")
 
@@ -1076,6 +1187,50 @@ fn generate_function_expr(
 
   // 返回闭包函数的地址
   self.emit_line("  la a0, minimbt_" + closure_name)
+
+  // 在创建点捕获变量值到全局
+  if capture_names.length() > 0 {
+    // 保存函数地址
+    self.emit_line("  addi sp, sp, -8")
+    self.emit_line("  sd a0, 0(sp)")
+    for i = 0; i < capture_names.length(); i = i + 1 {
+      let nm = capture_names[i]
+      match self.function_params.get(nm) {
+        Some(off) => self.emit_line("  ld a1, " + off.to_string() + "(fp)")
+        None =>
+          match self.local_vars.get(nm) {
+            Some(off2) =>
+              self.emit_line("  ld a1, " + off2.to_string() + "(fp)")
+            None => self.emit_line("  li a1, 0")
+          }
+      }
+      let cg = "minimbt_capture_" +
+        self.current_function_name +
+        "_" +
+        closure_name +
+        "_" +
+        nm
+      self.emit_line("  la t0, " + cg)
+      self.emit_line("  sd a1, 0(t0)")
+    }
+    // 恢复函数地址
+    self.emit_line("  ld a0, 0(sp)")
+    self.emit_line("  addi sp, sp, 8")
+
+    // 声明全局
+    for i = 0; i < capture_names.length(); i = i + 1 {
+      let cg = "minimbt_capture_" +
+        self.current_function_name +
+        "_" +
+        closure_name +
+        "_" +
+        capture_names[i]
+      self.emit_line(".data")
+      self.emit_line(cg + ":")
+      self.emit_line("  .quad 0")
+      self.emit_line(".text")
+    }
+  }
 }
 
 ///|

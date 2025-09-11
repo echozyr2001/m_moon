@@ -404,10 +404,15 @@ fn analyze_expression(self : SemanticAnalyzer, expr : @ast.Expr) -> Type {
     @ast.Identifier(name) =>
       match self.lookup_variable(name) {
         Some(t) => t.var_type
-        None => {
-          self.add_error("未定义的变量: " + name)
-          Unit
-        }
+        None =>
+          // 允许返回函数类型
+          match self.lookup_function(name) {
+            Some(func_t) => Function(func_t.params, func_t.return_type)
+            None => {
+              self.add_error("未定义的变量: " + name)
+              Unit
+            }
+          }
       }
     @ast.BinaryOp(op, left, right) => {
       let left_type = self.analyze_expression(left)

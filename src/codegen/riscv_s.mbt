@@ -328,8 +328,38 @@ fn generate_function_call(
 ) -> Unit {
   match func_expr {
     @ast.Identifier(func_name) =>
-      // 检查是否是预定义函数
-      if is_predefined_function(self, func_name) {
+      // 如果标识符在本地变量/参数中，视作函数指针变量，走间接调用
+      if self.function_params.get(func_name) != None ||
+        self.local_vars.get(func_name) != None {
+        // 先将函数地址加载到寄存器
+        self.generate_expression(func_expr)
+        // 保存函数地址
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a0, 0(sp)")
+
+        // 计算实参
+        if args.length() > 0 {
+          for i = 0; i < args.length(); i = i + 1 {
+            self.generate_expression(args[i])
+            self.emit_line("  addi sp, sp, -8")
+            self.emit_line("  sd a0, 0(sp)")
+          }
+          // 从栈上加载到a寄存器
+          for i = 0; i < args.length() && i < 8; i = i + 1 {
+            let stack_pos = (args.length() - 1 - i) * 8
+            self.emit_line(
+              "  ld a" + i.to_string() + ", " + stack_pos.to_string() + "(sp)",
+            )
+          }
+          // 清理参数栈
+          self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
+        }
+        // 间接调用
+        self.emit_line("  ld t0, 0(sp)")
+        self.emit_line("  addi sp, sp, 8")
+        self.emit_line("  jalr ra, t0, 0")
+      } else if is_predefined_function(self, func_name) {
+        // 预定义外部函数，直接调用带前缀的符号
         self.generate_predefined_function_call(func_name, args)
       } else {
         // 简化的函数调用：只处理前8个参数
@@ -546,6 +576,50 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       }
     }
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
+    @ast.FnDeclStmt(name, params, _ret_type, body) => {
+      // 生成局部函数（在当前文本中作为具名标签），并把其地址存入一个同名的局部变量
+      // 1) 首先生成函数体（单独的可调用标签）
+      let func_label = "minimbt_" + name
+      self.emit_line("")
+      self.emit_line(func_label + ":")
+      self.emit_line("  addi sp, sp, -16")
+      self.emit_line("  sd ra, 8(sp)")
+      self.emit_line("  sd fp, 0(sp)")
+      self.emit_line("  mv fp, sp")
+
+      // 保存a寄存器参数到栈并登记到function_params
+      self.function_params.clear()
+      for i = 0; i < params.length() && i < 8; i = i + 1 {
+        self.stack_offset = self.stack_offset - 8
+        self.emit_line("  addi sp, sp, -8")
+        self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
+        self.function_params.set(params[i].0, self.stack_offset)
+      }
+
+      // 生成函数体表达式
+      let saved_return = self.current_return_label
+      self.current_return_label = self.new_label("function_return")
+      self.generate_expression(body)
+      self.emit_line(self.current_return_label + ":")
+      self.current_return_label = saved_return
+
+      // 恢复栈帧
+      if params.length() > 0 && params.length() <= 8 {
+        self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
+      }
+      self.emit_line("  ld ra, 8(sp)")
+      self.emit_line("  ld fp, 0(sp)")
+      self.emit_line("  addi sp, sp, 16")
+      self.emit_line("  ret")
+      self.emit_line("")
+
+      // 2) 在当前作用域中创建同名变量存放函数地址
+      self.emit_line("  la a0, " + func_label)
+      self.stack_offset = self.stack_offset - 8
+      self.emit_line("  addi sp, sp, -8")
+      self.emit_line("  sd a0, 0(sp)")
+      self.local_vars.set(name, self.stack_offset)
+    }
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
       // 计算元组表达式
       self.generate_expression(expr)
@@ -592,7 +666,6 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       // 记录变量位置（相对于fp）
       self.local_vars.set(name, self.stack_offset)
     }
-    _ => self.emit_line("  # 未实现的语句类型")
   }
 }
 

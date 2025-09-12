@@ -602,126 +602,70 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
     }
     @ast.WhileStmt(condition, body) => self.generate_while_loop(condition, body)
     @ast.FnDeclStmt(name, params, _ret_type, body) => {
-      // 生成局部函数（在当前文本中作为具名标签），并把其地址存入一个同名的局部变量
-      // 简单闭包捕获：将外部需要的自由变量用全局符号保存与加载
-      // 对于常见的 "let x = ...; fn adder(y) { x + y }"，我们捕获 x
+      // 使用新的闭包处理方式：
+      // 1. 先保存当前作用域中需要捕获的变量到全局变量
+      // 2. 将函数声明转换为函数表达式并生成闭包代码
+      // 3. 将生成的函数地址保存为局部变量
 
-      // 捕获当前可见的所有局部与参数（按名称）
-      let capture_names = []
-      // 将当前可见的局部与参数名添加到捕获列表（启发式：常见短名）
-      let candidates = ["x", "y", "z", "n", "m", "a", "b", "acc"]
-      for i = 0; i < candidates.length(); i = i + 1 {
-        let nm = candidates[i]
-        if self.local_vars.get(nm) != None ||
-          self.function_params.get(nm) != None {
-          capture_names.push(nm)
+      // 保存需要捕获的变量到全局变量
+      let capture_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+      for i = 0; i < capture_vars.length(); i = i + 1 {
+        let var_name = capture_vars[i]
+        // 检查这个变量是否在当前作用域中存在
+        let mut var_offset : Int? = None
+        match self.function_params.get(var_name) {
+          Some(offset) => var_offset = Some(offset)
+          None =>
+            match self.local_vars.get(var_name) {
+              Some(offset) => var_offset = Some(offset)
+              None => ()
+            }
         }
-      }
-
-      // 2) 发射闭包函数体标签
-      let func_label = "minimbt_" + name
-      self.emit_line("")
-      self.emit_line(func_label + ":")
-      self.emit_line("  addi sp, sp, -16")
-      self.emit_line("  sd ra, 8(sp)")
-      self.emit_line("  sd fp, 0(sp)")
-      self.emit_line("  mv fp, sp")
-
-      // 保存a寄存器参数到栈并登记到function_params
-      self.function_params.clear()
-      for i = 0; i < params.length() && i < 8; i = i + 1 {
-        self.stack_offset = self.stack_offset - 8
-        self.emit_line("  addi sp, sp, -8")
-        self.emit_line("  sd a" + i.to_string() + ", 0(sp)")
-        self.function_params.set(params[i].0, self.stack_offset)
-      }
-
-      // 生成函数体表达式（在进入前，从全局加载所有捕获到栈上，放入同名局部）
-      for i = 0; i < capture_names.length(); i = i + 1 {
-        let nm = capture_names[i]
-        let cg = "minimbt_capture_" +
-          self.current_function_name +
-          "_" +
-          name +
-          "_" +
-          nm
-        self.emit_line("  la t0, " + cg)
-        self.emit_line("  ld a0, 0(t0)")
-        self.stack_offset = self.stack_offset - 8
-        self.emit_line("  addi sp, sp, -8")
-        self.emit_line("  sd a0, 0(sp)")
-        self.local_vars.set(nm, self.stack_offset)
-      }
-
-      // 生成函数体表达式
-      let saved_return = self.current_return_label
-      self.current_return_label = self.new_label("function_return")
-      self.generate_expression(body)
-      self.emit_line(self.current_return_label + ":")
-      self.current_return_label = saved_return
-
-      // 恢复栈帧
-      if params.length() > 0 && params.length() <= 8 {
-        self.emit_line("  addi sp, sp, " + (params.length() * 8).to_string())
-      }
-      self.emit_line("  ld ra, 8(sp)")
-      self.emit_line("  ld fp, 0(sp)")
-      self.emit_line("  addi sp, sp, 16")
-      self.emit_line("  ret")
-      self.emit_line("")
-
-      // 2) 在当前作用域中创建同名变量存放函数地址
-      self.emit_line("  la a0, " + func_label)
-      // 更新所有捕获的全局值为当前作用域下的变量值
-      if capture_names.length() > 0 {
-        self.emit_line("  addi sp, sp, -8")
-        self.emit_line("  sd a0, 0(sp)")
-        for i = 0; i < capture_names.length(); i = i + 1 {
-          let nm = capture_names[i]
-          match self.function_params.get(nm) {
-            Some(off) => self.emit_line("  ld a1, " + off.to_string() + "(fp)")
-            None =>
-              match self.local_vars.get(nm) {
-                Some(off2) =>
-                  self.emit_line("  ld a1, " + off2.to_string() + "(fp)")
-                None => self.emit_line("  li a1, 0")
+        match var_offset {
+          Some(offset) => {
+            // 检查是否不是闭包函数的参数（避免参数名冲突）
+            let mut is_param = false
+            for j = 0; j < params.length(); j = j + 1 {
+              if params[j].0 == var_name {
+                is_param = true
+                break
               }
+            }
+            if !is_param {
+              // 需要捕获这个变量，将其值保存到全局变量
+              self.emit_line("  ld a0, " + offset.to_string() + "(fp)")
+              self.emit_line("  la t0, minimbt_" + var_name)
+              self.emit_line("  sd a0, 0(t0)")
+
+              // 声明全局变量（如果还没声明）
+              if self.declared_capture_globals.get("minimbt_" + var_name) ==
+                None {
+                self.emit_line(".data")
+                self.emit_line("minimbt_" + var_name + ":")
+                self.emit_line("  .quad 0")
+                self.emit_line(".text")
+                self.declared_capture_globals.set("minimbt_" + var_name, true)
+              }
+            }
           }
-          let cg = "minimbt_capture_" +
-            self.current_function_name +
-            "_" +
-            name +
-            "_" +
-            nm
-          self.emit_line("  la t0, " + cg)
-          self.emit_line("  sd a1, 0(t0)")
+          None => ()
         }
-        self.emit_line("  ld a0, 0(sp)")
-        self.emit_line("  addi sp, sp, 8")
       }
+
+      // 转换为函数表达式形式处理
+      let param_pairs = Array::new()
+      for i = 0; i < params.length(); i = i + 1 {
+        param_pairs.push((params[i].0, None))
+      }
+
+      // 生成闭包函数
+      self.generate_function_expr(param_pairs, None, body)
+
+      // 将函数地址存储为局部变量
       self.stack_offset = self.stack_offset - 8
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
       self.local_vars.set(name, self.stack_offset)
-
-      // 3) 为所有捕获声明对应全局符号（只声明，不重复赋值）
-      for i = 0; i < capture_names.length(); i = i + 1 {
-        let nm = capture_names[i]
-        let cg = "minimbt_capture_" +
-          self.current_function_name +
-          "_" +
-          name +
-          "_" +
-          nm
-        // 防止重复声明
-        if self.declared_capture_globals.get(cg) == None {
-          self.emit_line(".data")
-          self.emit_line(cg + ":")
-          self.emit_line("  .quad 0")
-          self.emit_line(".text")
-          self.declared_capture_globals.set(cg, true)
-        }
-      }
     }
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
       // 计算元组表达式
@@ -930,8 +874,15 @@ fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
   // 检查是否是局部变量
   match self.local_vars.get(name) {
     Some(var_offset) =>
-      // 局部变量保存在相对于fp的位置
-      self.emit_line("  ld a0, " + var_offset.to_string() + "(fp)")
+      if var_offset == -999 {
+        // 特殊标记：闭包捕获的变量，从全局变量加载
+        self.emit_line("  # 加载全局变量: " + name)
+        self.emit_line("  la a0, minimbt_" + name)
+        self.emit_line("  ld a0, 0(a0)")
+      } else {
+        // 普通局部变量保存在相对于fp的位置
+        self.emit_line("  ld a0, " + var_offset.to_string() + "(fp)")
+      }
     None => {
       // 可能是全局变量，尝试加载全局变量
       self.emit_line("  # 加载全局变量: " + name)
@@ -1248,13 +1199,39 @@ fn generate_function_expr(
         closure_code.push("  li a0, 0  # 未找到参数")
       }
     _ => {
-      // 通用情况：使用临时代码生成器
+      // 通用情况：使用临时代码生成器处理闭包体
       let temp_codegen = RiscVCodeGen::new()
       temp_codegen.stack_offset = 0
       temp_codegen.function_params.clear()
-      // 设置参数映射
+      temp_codegen.local_vars.clear()
+
+      // 设置参数映射：闭包函数的参数在栈上
       for i = 0; i < params.length() && i < 8; i = i + 1 {
         temp_codegen.function_params.set(params[i].0, -8 * (i + 1))
+      }
+
+      // 处理闭包变量捕获：分析body中引用的外层变量
+      // 简化实现：假设常见的变量名需要从外层捕获
+      let capture_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+      for i = 0; i < capture_vars.length(); i = i + 1 {
+        let var_name = capture_vars[i]
+        // 检查这个变量是否在当前（外层）作用域中存在
+        if self.local_vars.get(var_name) != None ||
+          self.function_params.get(var_name) != None {
+          // 检查是否不是闭包函数的参数（避免参数名冲突）
+          let mut is_param = false
+          for j = 0; j < params.length(); j = j + 1 {
+            if params[j].0 == var_name {
+              is_param = true
+              break
+            }
+          }
+          if !is_param {
+            // 这是一个需要捕获的变量
+            // 在闭包函数中，我们通过全局变量来传递捕获的值
+            temp_codegen.local_vars.set(var_name, -999) // 特殊标记，表示从全局加载
+          }
+        }
       }
       temp_codegen.generate_expression(body)
       let body_lines = temp_codegen.output.split("\n")

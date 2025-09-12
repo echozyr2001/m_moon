@@ -458,10 +458,22 @@ fn generate_function_call(
         self.emit_line("  addi sp, sp, " + (args.length() * 8).to_string())
       }
 
-      // 恢复函数地址并调用
-      self.emit_line("  ld t0, 0(sp)")
+      // 恢复函数地址并调用（支持闭包）
+      self.emit_line("  ld t0, 0(sp)    # t0 = 闭包对象或函数指针")
       self.emit_line("  addi sp, sp, 8")
-      self.emit_line("  jalr ra, t0, 0")
+
+      // 处理闭包调用：将参数右移，为环境指针腾出a0位置
+      if args.length() > 0 {
+        // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
+        for i = args.length() - 1; i >= 0 && i < 7; i = i - 1 {
+          self.emit_line("  mv a" + (i + 1).to_string() + ", a" + i.to_string())
+        }
+      }
+
+      // 闭包调用协议：加载环境指针和函数指针
+      self.emit_line("  ld a0, 8(t0)    # 加载环境指针到a0")
+      self.emit_line("  ld t1, 0(t0)    # 加载函数指针到t1")
+      self.emit_line("  jalr ra, t1, 0  # 调用闭包函数")
     }
   }
 }

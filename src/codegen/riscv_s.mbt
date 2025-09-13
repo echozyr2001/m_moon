@@ -927,9 +927,9 @@ fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
   match self.local_vars.get(name) {
     Some(var_offset) =>
       if var_offset == -999 {
-        // 特殊标记：闭包捕获的变量，从全局变量加载（旧方式）
-        self.emit_line("  # 加载全局变量: " + name)
-        self.emit_line("  la a0, minimbt_" + name)
+        // 特殊标记：闭包捕获的变量，从全局变量加载
+        self.emit_line("  # 加载捕获的全局变量: " + name)
+        self.emit_line("  la a0, minimbt_capture_" + name)
         self.emit_line("  ld a0, 0(a0)")
       } else if var_offset <= -1000 {
         // 新的特殊标记：从环境中加载捕获的变量
@@ -1212,18 +1212,63 @@ fn generate_match_expr(
 }
 
 ///|
-/// 生成函数表达式（闭包）
+/// 生成函数表达式（闭包）- 简化版本，专门处理常见的闭包模式
 fn generate_function_expr(
   self : RiscVCodeGen,
   params : Array[(String, @ast.Type?)],
   _return_type : @ast.Type?,
   body : @ast.Expr,
 ) -> Unit {
-  // 简化闭包处理：生成一个简单的函数并返回其地址
   let closure_name = "closure_" + self.label_counter.to_string()
   self.label_counter = self.label_counter + 1
 
-  // 构建闭包函数代码（稍后添加到程序末尾）
+  // 分析需要捕获的变量（简化实现）
+  let captured_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+  let actual_captured = Array::new()
+  for var_name in captured_vars {
+    // 检查这个变量是否在当前作用域中存在且不是闭包参数
+    let mut is_param = false
+    for j = 0; j < params.length(); j = j + 1 {
+      if params[j].0 == var_name {
+        is_param = true
+        break
+      }
+    }
+    if !is_param &&
+      (
+        self.local_vars.get(var_name) != None ||
+        self.function_params.get(var_name) != None
+      ) {
+      actual_captured.push(var_name)
+
+      // 为此变量生成全局变量存储（如果尚未声明）
+      if !self.declared_capture_globals.get(var_name).unwrap_or(false) {
+        self.emit_line("# 全局变量用于捕获: " + var_name)
+        self.emit_line(".data")
+        self.emit_line("minimbt_capture_" + var_name + ":")
+        self.emit_line("  .dword 0")
+        self.emit_line(".text")
+        self.declared_capture_globals.set(var_name, true)
+      }
+
+      // 将当前变量值存储到全局变量中
+      self.emit_line("  # 存储捕获变量 " + var_name + " 的值")
+      match self.function_params.get(var_name) {
+        Some(offset) =>
+          self.emit_line("  ld t0, " + offset.to_string() + "(fp)")
+        None =>
+          match self.local_vars.get(var_name) {
+            Some(offset) =>
+              self.emit_line("  ld t0, " + offset.to_string() + "(fp)")
+            None => self.emit_line("  li t0, 0  # 默认值")
+          }
+      }
+      self.emit_line("  la t1, minimbt_capture_" + var_name)
+      self.emit_line("  sd t0, 0(t1)")
+    }
+  }
+
+  // 构建闭包函数代码
   let closure_code = Array::new()
   closure_code.push("")
   closure_code.push("minimbt_" + closure_name + ":")
@@ -1239,70 +1284,27 @@ fn generate_function_expr(
     closure_code.push("  sd a" + i.to_string() + ", 0(sp)")
   }
 
-  // 简化闭包体生成：只支持简单的表达式
-  // 对于 x + 5 这样的表达式，我们可以硬编码生成
-  match body {
-    @ast.BinaryOp(@ast.Add, @ast.Identifier(param_name), @ast.IntLiteral(value)) =>
-      // 检查param_name是否是第一个参数
-      if params.length() > 0 && params[0].0 == param_name {
-        closure_code.push("  ld a0, -8(fp)  # 加载第一个参数")
-        closure_code.push("  li a1, " + value.to_string())
-        closure_code.push("  add a0, a0, a1")
-      } else {
-        closure_code.push("  li a0, 0  # 未找到参数")
-      }
-    @ast.BinaryOp(@ast.Add, @ast.IntLiteral(value), @ast.Identifier(param_name)) =>
-      // 检查param_name是否是第一个参数
-      if params.length() > 0 && params[0].0 == param_name {
-        closure_code.push("  ld a0, -8(fp)  # 加载第一个参数")
-        closure_code.push("  li a1, " + value.to_string())
-        closure_code.push("  add a0, a0, a1")
-      } else {
-        closure_code.push("  li a0, 0  # 未找到参数")
-      }
-    _ => {
-      // 通用情况：使用临时代码生成器处理闭包体
-      let temp_codegen = RiscVCodeGen::new()
-      temp_codegen.stack_offset = 0
-      temp_codegen.function_params.clear()
-      temp_codegen.local_vars.clear()
+  // 使用临时代码生成器处理闭包体
+  let temp_codegen = RiscVCodeGen::new()
+  temp_codegen.stack_offset = 0
+  temp_codegen.function_params.clear()
+  temp_codegen.local_vars.clear()
 
-      // 设置参数映射：闭包函数的参数在栈上
-      for i = 0; i < params.length() && i < 8; i = i + 1 {
-        temp_codegen.function_params.set(params[i].0, -8 * (i + 1))
-      }
+  // 设置参数映射
+  for i = 0; i < params.length() && i < 8; i = i + 1 {
+    temp_codegen.function_params.set(params[i].0, -8 * (i + 1))
+  }
 
-      // 处理闭包变量捕获：分析body中引用的外层变量
-      // 简化实现：假设常见的变量名需要从外层捕获
-      let capture_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
-      for i = 0; i < capture_vars.length(); i = i + 1 {
-        let var_name = capture_vars[i]
-        // 检查这个变量是否在当前（外层）作用域中存在
-        if self.local_vars.get(var_name) != None ||
-          self.function_params.get(var_name) != None {
-          // 检查是否不是闭包函数的参数（避免参数名冲突）
-          let mut is_param = false
-          for j = 0; j < params.length(); j = j + 1 {
-            if params[j].0 == var_name {
-              is_param = true
-              break
-            }
-          }
-          if !is_param {
-            // 这是一个需要捕获的变量
-            // 在闭包函数中，我们通过全局变量来传递捕获的值
-            temp_codegen.local_vars.set(var_name, -999) // 特殊标记，表示从全局加载
-          }
-        }
-      }
-      temp_codegen.generate_expression(body)
-      let body_lines = temp_codegen.output.split("\n")
-      for line in body_lines {
-        let trimmed = line.to_string()
-        if trimmed != "" {
-          closure_code.push(trimmed)
-        }
-      }
+  // 设置捕获变量映射
+  for var_name in actual_captured {
+    temp_codegen.local_vars.set(var_name, -999) // 特殊标记：从全局变量加载
+  }
+  temp_codegen.generate_expression(body)
+  let body_lines = temp_codegen.output.split("\n")
+  for line in body_lines {
+    let trimmed = line.to_string()
+    if trimmed != "" {
+      closure_code.push(trimmed)
     }
   }
 

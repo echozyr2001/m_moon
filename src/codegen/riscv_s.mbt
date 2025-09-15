@@ -192,7 +192,7 @@ fn generate_expression(self : RiscVCodeGen, expr : @ast.Expr) -> Unit {
       self.generate_field_access(target, field_name)
     @ast.MatchExpr(expr, arms) => self.generate_match_expr(expr, arms)
     @ast.FunctionExpr(params, return_type, body) =>
-      self.generate_function_expr(params, return_type, body)
+      self.generate_function_expr_as_closure(params, return_type, body)
   }
 }
 
@@ -635,38 +635,38 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       // 2. 生成闭包对象（包含函数指针和环境指针）
       // 3. 将闭包对象存储为局部变量
 
-      // 分析需要捕获的变量
-      let capture_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
+      // 分析需要捕获的变量 - 简化实现：检查所有当前作用域中的变量
       let captured_vars = Array::new()
-      for i = 0; i < capture_vars.length(); i = i + 1 {
-        let var_name = capture_vars[i]
-        // 检查这个变量是否在当前作用域中存在
-        let mut var_offset : Int? = None
-        match self.function_params.get(var_name) {
-          Some(offset) => var_offset = Some(offset)
-          None =>
-            match self.local_vars.get(var_name) {
-              Some(offset) => var_offset = Some(offset)
-              None => ()
-            }
-        }
-        match var_offset {
-          Some(offset) => {
-            // 检查是否不是闭包函数的参数（避免参数名冲突）
-            let mut is_param = false
-            for j = 0; j < params.length(); j = j + 1 {
-              if params[j].0 == var_name {
-                is_param = true
-                break
-              }
-            }
-            if !is_param {
-              captured_vars.push((var_name, offset))
-            }
+
+      // 检查所有局部变量
+      self.local_vars.each(fn(var_name, offset) {
+        // 检查是否不是闭包函数的参数（避免参数名冲突）
+        let mut is_param = false
+        for j = 0; j < params.length(); j = j + 1 {
+          if params[j].0 == var_name {
+            is_param = true
+            break
           }
-          None => ()
         }
-      }
+        if !is_param {
+          captured_vars.push((var_name, offset))
+        }
+      })
+
+      // 检查所有函数参数
+      self.function_params.each(fn(var_name, offset) {
+        // 检查是否不是闭包函数的参数（避免参数名冲突）
+        let mut is_param = false
+        for j = 0; j < params.length(); j = j + 1 {
+          if params[j].0 == var_name {
+            is_param = true
+            break
+          }
+        }
+        if !is_param {
+          captured_vars.push((var_name, offset))
+        }
+      })
       if captured_vars.length() > 0 {
         // 创建环境对象：分配内存存储捕获的变量
         let env_size = captured_vars.length() * 8
@@ -1223,10 +1223,10 @@ fn generate_function_expr(
   self.label_counter = self.label_counter + 1
 
   // 分析需要捕获的变量（简化实现）
-  let captured_vars = ["x", "y", "z", "n", "m", "a", "b", "acc"]
   let actual_captured = Array::new()
-  for var_name in captured_vars {
-    // 检查这个变量是否在当前作用域中存在且不是闭包参数
+
+  // 检查所有局部变量
+  self.local_vars.each(fn(var_name, _offset) {
     let mut is_param = false
     for j = 0; j < params.length(); j = j + 1 {
       if params[j].0 == var_name {
@@ -1234,12 +1234,29 @@ fn generate_function_expr(
         break
       }
     }
-    if !is_param &&
-      (
-        self.local_vars.get(var_name) != None ||
-        self.function_params.get(var_name) != None
-      ) {
+    if !is_param {
       actual_captured.push(var_name)
+    }
+  })
+
+  // 检查所有函数参数
+  self.function_params.each(fn(var_name, _offset) {
+    let mut is_param = false
+    for j = 0; j < params.length(); j = j + 1 {
+      if params[j].0 == var_name {
+        is_param = true
+        break
+      }
+    }
+    if !is_param {
+      actual_captured.push(var_name)
+    }
+  })
+
+  // 为实际捕获的变量处理
+  for var_name in actual_captured {
+    if self.local_vars.get(var_name) != None ||
+      self.function_params.get(var_name) != None {
 
       // 为此变量生成全局变量存储（如果尚未声明）
       if !self.declared_capture_globals.get(var_name).unwrap_or(false) {
@@ -1355,6 +1372,92 @@ fn emit_runtime_functions(self : RiscVCodeGen) -> Unit {
   self.emit_line("# minimbt_truncate, minimbt_floor, minimbt_abs_float")
   self.emit_line("# minimbt_sqrt, minimbt_sin, minimbt_cos, minimbt_atan")
   self.emit_line("")
+}
+
+///|
+/// 生成函数表达式作为闭包（统一处理有无捕获变量的情况）
+fn generate_function_expr_as_closure(
+  self : RiscVCodeGen,
+  params : Array[(String, @ast.Type?)],
+  return_type : @ast.Type?,
+  body : @ast.Expr,
+) -> Unit {
+  // 分析需要捕获的变量
+  let captured_vars = Array::new()
+
+  // 检查所有局部变量
+  self.local_vars.each(fn(var_name, offset) {
+    // 检查是否不是闭包函数的参数（避免参数名冲突）
+    let mut is_param = false
+    for j = 0; j < params.length(); j = j + 1 {
+      if params[j].0 == var_name {
+        is_param = true
+        break
+      }
+    }
+    if !is_param {
+      captured_vars.push((var_name, offset))
+    }
+  })
+
+  // 检查所有函数参数
+  self.function_params.each(fn(var_name, offset) {
+    // 检查是否不是闭包函数的参数（避免参数名冲突）
+    let mut is_param = false
+    for j = 0; j < params.length(); j = j + 1 {
+      if params[j].0 == var_name {
+        is_param = true
+        break
+      }
+    }
+    if !is_param {
+      captured_vars.push((var_name, offset))
+    }
+  })
+  if captured_vars.length() > 0 {
+    // 有捕获变量，创建环境对象
+    let env_size = captured_vars.length() * 8
+    self.emit_line("  li a0, " + env_size.to_string())
+    self.emit_line("  call minimbt_malloc")
+    self.emit_line("  mv t1, a0  # 保存环境指针")
+
+    // 将捕获的变量存储到环境中
+    for i = 0; i < captured_vars.length(); i = i + 1 {
+      let (_var_name, offset) = captured_vars[i]
+      self.emit_line("  ld a0, " + offset.to_string() + "(fp)")
+      self.emit_line("  sd a0, " + (i * 8).to_string() + "(t1)")
+    }
+
+    // 创建闭包对象：分配16字节（函数指针 + 环境指针）
+    self.emit_line("  li a0, 16")
+    self.emit_line("  call minimbt_malloc")
+    self.emit_line("  mv t2, a0  # 保存闭包对象指针")
+
+    // 生成闭包函数（会使用captured_vars信息）  
+    self.generate_function_expr_with_env(
+      params, return_type, body, captured_vars,
+    )
+
+    // 将函数地址和环境指针存储到闭包对象中
+    self.emit_line("  sd a0, 0(t2)   # 存储函数指针")
+    self.emit_line("  sd t1, 8(t2)   # 存储环境指针")
+    self.emit_line("  mv a0, t2      # 返回闭包对象")
+  } else {
+    // 没有捕获变量，仍然创建闭包对象以保持一致性
+    // 创建闭包对象：分配16字节（函数指针 + NULL环境指针）
+    self.emit_line("  li a0, 16")
+    self.emit_line("  call minimbt_malloc")
+    self.emit_line("  mv t2, a0  # 保存闭包对象指针")
+
+    // 生成简单函数
+    self.generate_function_expr(params, return_type, body)
+
+    // 将函数地址和NULL环境指针存储到闭包对象中
+    self.emit_line("  sd a0, 0(t2)   # 存储函数指针")
+    self.emit_line("  li t1, 0")
+    self.emit_line("  sd t1, 8(t2)   # 存储NULL环境指针")
+    self.emit_line("  mv a0, t2      # 返回闭包对象")
+  }
 }
 
 ///|

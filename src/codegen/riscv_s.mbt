@@ -718,6 +718,10 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
       self.local_vars.set(name, self.stack_offset)
+
+      // 重要：由于这是一个语句，我们需要保持闭包对象在a0中以供后续使用
+      // 但是如果后面还有其他语句，闭包对象可能会被覆盖
+      // 所以我们需要在需要时重新加载
     }
     @ast.LetTupleStmt(bindings, _type_annotation, expr) => {
       // 计算元组表达式

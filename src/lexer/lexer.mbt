@@ -100,7 +100,20 @@ fn read_identifier(self : Lexer) -> String {
       _ => break
     }
   }
-  self.input.substring(start~, end=self.position)
+  if start == self.position {
+    ""
+  } else if start >= 0 &&
+    start <= self.position &&
+    self.position <= self.input.length() {
+    self.input[start:self.position].to_string() catch {
+      InvalidIndex =>
+        abort("Lexer error: Invalid index when extracting identifier")
+      IndexOutOfBounds =>
+        abort("Lexer error: Index out of bounds when extracting identifier")
+    }
+  } else {
+    abort("Lexer error: Invalid position state in read_identifier")
+  }
 }
 
 ///|

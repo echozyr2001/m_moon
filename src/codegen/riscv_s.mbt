@@ -705,12 +705,25 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
         self.emit_line("  sd t1, 8(t2)   # 存储环境指针")
         self.emit_line("  mv a0, t2      # 返回闭包对象")
       } else {
-        // 没有捕获变量的简单情况
+        // 没有捕获变量：仍然创建闭包对象（函数指针 + NULL环境）
         let param_pairs = Array::new()
         for i = 0; i < params.length(); i = i + 1 {
           param_pairs.push((params[i].0, None))
         }
-        self.generate_function_expr(param_pairs, None, body)
+
+        // 分配闭包对象
+        self.emit_line("  li a0, 16")
+        self.emit_line("  call minimbt_malloc")
+        self.emit_line("  mv t2, a0  # 保存闭包对象指针")
+
+        // 生成接受环境参数的函数（即使无捕获，调用约定保持一致）
+        self.generate_function_expr_with_env(param_pairs, None, body, [])
+
+        // 写入闭包对象：[0]=函数指针, [8]=NULL环境
+        self.emit_line("  sd a0, 0(t2)")
+        self.emit_line("  li t1, 0")
+        self.emit_line("  sd t1, 8(t2)")
+        self.emit_line("  mv a0, t2")
       }
 
       // 将闭包对象存储为局部变量
@@ -1216,140 +1229,6 @@ fn generate_match_expr(
 }
 
 ///|
-/// 生成函数表达式（闭包）- 简化版本，专门处理常见的闭包模式
-fn generate_function_expr(
-  self : RiscVCodeGen,
-  params : Array[(String, @ast.Type?)],
-  _return_type : @ast.Type?,
-  body : @ast.Expr,
-) -> Unit {
-  let closure_name = "closure_" + self.label_counter.to_string()
-  self.label_counter = self.label_counter + 1
-
-  // 分析需要捕获的变量（简化实现）
-  let actual_captured = Array::new()
-
-  // 检查所有局部变量
-  self.local_vars.each(fn(var_name, _offset) {
-    let mut is_param = false
-    for j = 0; j < params.length(); j = j + 1 {
-      if params[j].0 == var_name {
-        is_param = true
-        break
-      }
-    }
-    if !is_param {
-      actual_captured.push(var_name)
-    }
-  })
-
-  // 检查所有函数参数
-  self.function_params.each(fn(var_name, _offset) {
-    let mut is_param = false
-    for j = 0; j < params.length(); j = j + 1 {
-      if params[j].0 == var_name {
-        is_param = true
-        break
-      }
-    }
-    if !is_param {
-      actual_captured.push(var_name)
-    }
-  })
-
-  // 为实际捕获的变量处理
-  for var_name in actual_captured {
-    if self.local_vars.get(var_name) != None ||
-      self.function_params.get(var_name) != None {
-
-      // 为此变量生成全局变量存储（如果尚未声明）
-      if !self.declared_capture_globals.get(var_name).unwrap_or(false) {
-        self.emit_line("# 全局变量用于捕获: " + var_name)
-        self.emit_line(".data")
-        self.emit_line("minimbt_capture_" + var_name + ":")
-        self.emit_line("  .dword 0")
-        self.emit_line(".text")
-        self.declared_capture_globals.set(var_name, true)
-      }
-
-      // 将当前变量值存储到全局变量中
-      self.emit_line("  # 存储捕获变量 " + var_name + " 的值")
-      match self.function_params.get(var_name) {
-        Some(offset) =>
-          self.emit_line("  ld t0, " + offset.to_string() + "(fp)")
-        None =>
-          match self.local_vars.get(var_name) {
-            Some(offset) =>
-              self.emit_line("  ld t0, " + offset.to_string() + "(fp)")
-            None => self.emit_line("  li t0, 0  # 默认值")
-          }
-      }
-      self.emit_line("  la t1, minimbt_capture_" + var_name)
-      self.emit_line("  sd t0, 0(t1)")
-    }
-  }
-
-  // 构建闭包函数代码
-  let closure_code = Array::new()
-  closure_code.push("")
-  closure_code.push("minimbt_" + closure_name + ":")
-  closure_code.push("  # 闭包函数")
-  closure_code.push("  addi sp, sp, -16")
-  closure_code.push("  sd ra, 8(sp)")
-  closure_code.push("  sd fp, 0(sp)")
-  closure_code.push("  mv fp, sp")
-
-  // 保存参数到栈
-  for i = 0; i < params.length() && i < 8; i = i + 1 {
-    closure_code.push("  addi sp, sp, -8")
-    closure_code.push("  sd a" + i.to_string() + ", 0(sp)")
-  }
-
-  // 使用临时代码生成器处理闭包体
-  let temp_codegen = RiscVCodeGen::new()
-  temp_codegen.stack_offset = 0
-  temp_codegen.function_params.clear()
-  temp_codegen.local_vars.clear()
-
-  // 设置参数映射
-  for i = 0; i < params.length() && i < 8; i = i + 1 {
-    temp_codegen.function_params.set(params[i].0, -8 * (i + 1))
-  }
-
-  // 设置捕获变量映射
-  for var_name in actual_captured {
-    temp_codegen.local_vars.set(var_name, -999) // 特殊标记：从全局变量加载
-  }
-  temp_codegen.generate_expression(body)
-  let body_lines = temp_codegen.output.split("\n")
-  for line in body_lines {
-    let trimmed = line.to_string()
-    if trimmed != "" {
-      closure_code.push(trimmed)
-    }
-  }
-
-  // 清理栈并返回
-  let param_stack_size = params.length() * 8
-  if param_stack_size > 0 {
-    closure_code.push("  addi sp, sp, " + param_stack_size.to_string())
-  }
-  closure_code.push("  ld ra, 8(sp)")
-  closure_code.push("  ld fp, 0(sp)")
-  closure_code.push("  addi sp, sp, 16")
-  closure_code.push("  ret")
-  closure_code.push("")
-
-  // 将闭包代码添加到closure_functions字段中
-  for line in closure_code {
-    self.closure_functions = self.closure_functions + line + "\n"
-  }
-
-  // 在当前位置返回闭包函数的地址
-  self.emit_line("  la a0, minimbt_" + closure_name)
-}
-
-///|
 /// 输出一行汇编代码
 fn emit_line(self : RiscVCodeGen, line : String) -> Unit {
   self.output = self.output + line + "\n"
@@ -1453,8 +1332,8 @@ fn generate_function_expr_as_closure(
     self.emit_line("  call minimbt_malloc")
     self.emit_line("  mv t2, a0  # 保存闭包对象指针")
 
-    // 生成简单函数
-    self.generate_function_expr(params, return_type, body)
+    // 生成接受环境参数的函数（即使无捕获，调用约定保持一致）
+    self.generate_function_expr_with_env(params, return_type, body, [])
 
     // 将函数地址和NULL环境指针存储到闭包对象中
     self.emit_line("  sd a0, 0(t2)   # 存储函数指针")

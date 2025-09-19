@@ -387,10 +387,13 @@ fn generate_function_call(
         // 需要将环境指针作为a0传递，其他参数右移
         if args.length() > 0 {
           // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
-          for i = args.length() - 1; i >= 0 && i < 7; i = i - 1 {
-            self.emit_line(
-              "  mv a" + (i + 1).to_string() + ", a" + i.to_string(),
-            )
+          // 从最高寄存器开始，避免覆盖
+          for i = args.length() - 1; i >= 0; i = i - 1 {
+            if i < 7 { // 确保目标寄存器在有效范围内
+              self.emit_line(
+                "  mv a" + (i + 1).to_string() + ", a" + i.to_string(),
+              )
+            }
           }
         }
 
@@ -465,8 +468,13 @@ fn generate_function_call(
       // 处理闭包调用：将参数右移，为环境指针腾出a0位置
       if args.length() > 0 {
         // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
-        for i = args.length() - 1; i >= 0 && i < 7; i = i - 1 {
-          self.emit_line("  mv a" + (i + 1).to_string() + ", a" + i.to_string())
+        // 从最高寄存器开始，避免覆盖
+        for i = args.length() - 1; i >= 0; i = i - 1 {
+          if i < 7 { // 确保目标寄存器在有效范围内
+            self.emit_line(
+              "  mv a" + (i + 1).to_string() + ", a" + i.to_string(),
+            )
+          }
         }
       }
 

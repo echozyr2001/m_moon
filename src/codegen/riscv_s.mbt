@@ -1405,6 +1405,15 @@ fn is_closure_expression(self : RiscVCodeGen, expr : @ast.Expr) -> Bool {
     @ast.Identifier(name) =>
       // 检查是否是已知的闭包变量
       self.closure_vars.get(name) == Some(true)
+    @ast.FunctionCall(func_expr, _args) =>
+      // 函数调用可能返回闭包对象
+      match func_expr {
+        @ast.Identifier(func_name) =>
+          // 如果是函数调用，检查函数名是否是返回闭包的函数
+          // 简化实现：假设所有用户定义的函数都可能返回闭包
+          !is_predefined_function(self, func_name)
+        _ => true // 其他函数表达式调用总是返回闭包
+      }
     _ => false // 其他表达式不是闭包对象
   }
 }

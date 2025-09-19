@@ -996,12 +996,26 @@ fn generate_load_variable(self : RiscVCodeGen, name : String) -> Unit {
         // 普通局部变量保存在相对于fp的位置
         self.emit_line("  ld a0, " + var_offset.to_string() + "(fp)")
       }
-    None => {
-      // 可能是全局变量，尝试加载全局变量
-      self.emit_line("  # 加载全局变量: " + name)
-      self.emit_line("  la a0, minimbt_" + name)
-      self.emit_line("  ld a0, 0(a0)")
-    }
+    None =>
+      // 可能是全局变量或函数，尝试加载
+      // 如果是函数，需要创建闭包对象
+      if self.is_function_name(name) {
+        // 创建闭包对象包装函数指针
+        self.emit_line("  # 创建函数闭包对象: " + name)
+        self.emit_line("  li a0, 16")
+        self.emit_line("  call minimbt_malloc")
+        self.emit_line("  mv t0, a0  # 保存闭包对象指针")
+        self.emit_line("  la a1, minimbt_" + name)
+        self.emit_line("  sd a1, 0(t0)   # 存储函数指针")
+        self.emit_line("  li a1, 0")
+        self.emit_line("  sd a1, 8(t0)   # 存储NULL环境指针")
+        self.emit_line("  mv a0, t0      # 返回闭包对象")
+      } else {
+        // 普通全局变量
+        self.emit_line("  # 加载全局变量: " + name)
+        self.emit_line("  la a0, minimbt_" + name)
+        self.emit_line("  ld a0, 0(a0)")
+      }
   }
 }
 
@@ -1011,6 +1025,12 @@ fn new_label(self : RiscVCodeGen, prefix : String) -> String {
   let label = prefix + "_" + self.label_counter.to_string()
   self.label_counter = self.label_counter + 1
   label
+}
+
+///|
+/// 检查是否是函数名（简化实现：假设所有非预定义函数都是用户定义的函数）
+fn is_function_name(self : RiscVCodeGen, name : String) -> Bool {
+  !is_predefined_function(self, name)
 }
 
 ///|

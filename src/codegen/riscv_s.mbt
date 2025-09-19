@@ -75,8 +75,8 @@ fn generate_top_level(self : RiscVCodeGen, decl : @ast.TopLevel) -> Unit {
       self.function_params.clear()
       self.current_return_label = self.new_label("function_return")
       self.generate_expression(body)
-      // 主函数执行完毕后不设置任何返回值，让a0保持不确定状态
-      // 或者我们可以尝试不修改a0
+      // 主函数执行完毕后返回0表示成功
+      self.emit_line("  li a0, 0  # 主函数返回0")
       self.emit_line(self.current_return_label + ":")
       self.emit_line("  # 恢复栈帧")
       self.emit_line("  mv sp, fp")

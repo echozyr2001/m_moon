@@ -12,6 +12,7 @@ pub struct RiscVCodeGen {
   current_inner_function_name : String // 当前正在生成的局部函数名
   declared_capture_globals : Map[String, Bool] // 已声明的捕获全局符号
   mut closure_functions : String // 存储所有的闭包函数定义
+  closure_vars : Map[String, Bool] // 变量名 -> 是否为闭包对象
 }
 
 ///|
@@ -28,6 +29,7 @@ pub fn RiscVCodeGen::new() -> RiscVCodeGen {
     current_inner_function_name: "",
     declared_capture_globals: Map::new(),
     closure_functions: "",
+    closure_vars: Map::new(),
   }
 }
 
@@ -382,25 +384,29 @@ fn generate_function_call(
         self.emit_line("  ld t0, 0(sp)    # t0 = 闭包对象或函数指针")
         self.emit_line("  addi sp, sp, 8")
 
-        // 简化判断：如果是malloc分配的对象，视为闭包对象
-        // 闭包对象: [函数指针, 环境指针]
-        // 需要将环境指针作为a0传递，其他参数右移
-        if args.length() > 0 {
-          // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
-          // 从最高寄存器开始，避免覆盖
-          for i = args.length() - 1; i >= 0; i = i - 1 {
-            if i < 7 { // 确保目标寄存器在有效范围内
-              self.emit_line(
-                "  mv a" + (i + 1).to_string() + ", a" + i.to_string(),
-              )
+        // 检查是否是闭包对象
+        if self.closure_vars.get(func_name) == Some(true) {
+          // 闭包对象: [函数指针, 环境指针]
+          // 需要将环境指针作为a0传递，其他参数右移
+          if args.length() > 0 {
+            // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
+            // 从最高寄存器开始，避免覆盖
+            for i = args.length() - 1; i >= 0; i = i - 1 {
+              if i < 7 { // 确保目标寄存器在有效范围内
+                self.emit_line(
+                  "  mv a" + (i + 1).to_string() + ", a" + i.to_string(),
+                )
+              }
             }
           }
+          // 加载环境指针和函数指针
+          self.emit_line("  ld a0, 8(t0)    # 加载环境指针到a0")
+          self.emit_line("  ld t1, 0(t0)    # 加载函数指针到t1")
+          self.emit_line("  jalr ra, t1, 0  # 调用闭包函数")
+        } else {
+          // 常规函数指针，直接调用
+          self.emit_line("  jalr ra, t0, 0  # 直接调用函数指针")
         }
-
-        // 检查是否是闭包对象（简化：假设非空指针都是闭包对象）
-        self.emit_line("  ld a0, 8(t0)    # 加载环境指针到a0")
-        self.emit_line("  ld t1, 0(t0)    # 加载函数指针到t1")
-        self.emit_line("  jalr ra, t1, 0  # 调用闭包函数")
       } else if is_predefined_function(self, func_name) {
         // 预定义外部函数，直接调用带前缀的符号
         self.generate_predefined_function_call(func_name, args)
@@ -465,7 +471,8 @@ fn generate_function_call(
       self.emit_line("  ld t0, 0(sp)    # t0 = 闭包对象或函数指针")
       self.emit_line("  addi sp, sp, 8")
 
-      // 处理闭包调用：将参数右移，为环境指针腾出a0位置
+      // 对于函数表达式，我们总是假设它是闭包对象
+      // 因为函数表达式总是创建闭包对象
       if args.length() > 0 {
         // 为闭包调用腾出a0位置：将参数右移一位（a0->a1, a1->a2, ...）
         // 从最高寄存器开始，避免覆盖
@@ -617,6 +624,11 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
           // 记录变量位置（相对于fp）
           // 变量存储在当前sp位置，即fp + stack_offset
           self.local_vars.set(name, self.stack_offset)
+
+          // 检查是否是闭包对象
+          if self.is_closure_expression(expr) {
+            self.closure_vars.set(name, true)
+          }
         }
         @ast.Binding::Wildcard =>
           // 通配符不需要存储
@@ -739,6 +751,7 @@ fn generate_statement(self : RiscVCodeGen, stmt : @ast.Stmt) -> Unit {
       self.emit_line("  addi sp, sp, -8")
       self.emit_line("  sd a0, 0(sp)")
       self.local_vars.set(name, self.stack_offset)
+      self.closure_vars.set(name, true) // 标记为闭包对象
 
       // 重要：由于这是一个语句，我们需要保持闭包对象在a0中以供后续使用
       // 但是如果后面还有其他语句，闭包对象可能会被覆盖
@@ -809,6 +822,12 @@ fn generate_assignment(
         Some(param_offset) => {
           // 参数在当前函数栈上
           self.emit_line("  sd a0, " + param_offset.to_string() + "(fp)")
+          // 更新闭包状态
+          if self.is_closure_expression(expr) {
+            self.closure_vars.set(name, true)
+          } else {
+            self.closure_vars.set(name, false)
+          }
           return
         }
         None => ()
@@ -816,8 +835,15 @@ fn generate_assignment(
 
       // 检查是否是局部变量
       match self.local_vars.get(name) {
-        Some(var_offset) =>
+        Some(var_offset) => {
           self.emit_line("  sd a0, " + var_offset.to_string() + "(fp)")
+          // 更新闭包状态
+          if self.is_closure_expression(expr) {
+            self.closure_vars.set(name, true)
+          } else {
+            self.closure_vars.set(name, false)
+          }
+        }
         None => self.emit_line("  # 变量 " + name + " 未找到")
       }
     }
@@ -1348,6 +1374,18 @@ fn generate_function_expr_as_closure(
     self.emit_line("  li t1, 0")
     self.emit_line("  sd t1, 8(t2)   # 存储NULL环境指针")
     self.emit_line("  mv a0, t2      # 返回闭包对象")
+  }
+}
+
+///|
+/// 检查表达式是否是闭包对象
+fn is_closure_expression(self : RiscVCodeGen, expr : @ast.Expr) -> Bool {
+  match expr {
+    @ast.FunctionExpr(_, _, _) => true // 函数表达式总是创建闭包对象
+    @ast.Identifier(name) =>
+      // 检查是否是已知的闭包变量
+      self.closure_vars.get(name) == Some(true)
+    _ => false // 其他表达式不是闭包对象
   }
 }
 

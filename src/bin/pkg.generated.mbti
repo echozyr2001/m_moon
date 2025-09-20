@@ -1,0 +1,15 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/bin"
+
+// Values
+
+// Errors
+
+// Types and methods
+type CompileStats
+impl Show for CompileStats
+
+// Type aliases
+
+// Traits
+

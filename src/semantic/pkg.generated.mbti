@@ -1,0 +1,44 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/semantic"
+
+import(
+  "echozyr2001/m_moon/ast"
+)
+
+// Values
+fn analyze_program(@ast.Program) -> SemanticResult
+
+// Errors
+
+// Types and methods
+type Scope
+
+pub struct SemanticAnalyzer {
+  mut scopes : Array[Scope]
+  mut current_function : String?
+  mut errors : Array[String]
+}
+fn SemanticAnalyzer::analyze(Self, @ast.Program) -> SemanticResult
+fn SemanticAnalyzer::new() -> Self
+
+pub struct SemanticResult {
+  typed_program : @ast.Program
+  errors : Array[String]
+}
+
+pub enum Type {
+  Int
+  Double
+  Bool
+  Unit
+  Array(Type)
+  Function(Array[Type], Type)
+  UserDefinedType(String)
+}
+impl Eq for Type
+impl Show for Type
+
+// Type aliases
+
+// Traits
+

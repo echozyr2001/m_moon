@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/parser"
+
+import(
+  "echozyr2001/m_moon/ast"
+  "echozyr2001/m_moon/lexer"
+)
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct ParseError {
+  message : String
+  position : Int
+  expected : String
+  actual : String
+  context : String
+  source_lines : Array[String]
+  error_line : Int
+  error_column : Int
+}
+impl Eq for ParseError
+impl Show for ParseError
+
+pub struct Parser {
+  tokens : Array[@lexer.TokenWithPos]
+  mut position : Int
+  mut last_error : ParseError?
+  source_lines : Array[String]
+}
+fn Parser::get_last_error(Self) -> ParseError?
+fn Parser::new(Array[@lexer.TokenWithPos]) -> Self
+fn Parser::parse_expr(Self) -> @ast.Expr?
+fn Parser::parse_program(Self) -> @ast.Program?
+fn Parser::parse_type(Self) -> @ast.Type?
+
+// Type aliases
+
+// Traits
+

@@ -1,0 +1,153 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/ast"
+
+// Values
+
+// Errors
+
+// Types and methods
+pub(all) enum BinaryOperator {
+  Add
+  Sub
+  Mul
+  Div
+  Mod
+  Equal
+  NotEqual
+  Less
+  Greater
+  LessEqual
+  GreaterEqual
+  And
+  Or
+}
+impl Eq for BinaryOperator
+impl Show for BinaryOperator
+
+pub(all) enum Binding {
+  Variable(String)
+  Wildcard
+}
+impl Eq for Binding
+impl Show for Binding
+
+pub(all) struct EnumVariant {
+  name : String
+  field_types : Array[Type]
+}
+impl Eq for EnumVariant
+impl Show for EnumVariant
+
+pub(all) enum Expr {
+  UnitLiteral
+  BoolLiteral(Bool)
+  IntLiteral(Int)
+  DoubleLiteral(Double)
+  Identifier(String)
+  TupleExpr(Array[Expr])
+  ArrayExpr(Array[Expr])
+  ArrayMake(Expr, Expr)
+  StructConstruct(String, Array[(String, Expr)])
+  EnumConstruct(String, String?, Array[Expr])
+  BinaryOp(BinaryOperator, Expr, Expr)
+  UnaryOp(UnaryOperator, Expr)
+  IfExpr(Expr, Expr, Expr?)
+  MatchExpr(Expr, Array[MatchArm])
+  BlockExpr(Array[Stmt], Expr?)
+  FunctionCall(Expr, Array[Expr])
+  ArrayAccess(Expr, Expr)
+  FieldAccess(Expr, String)
+  FunctionExpr(Array[(String, Type?)], Type?, Expr)
+  GroupExpr(Expr)
+}
+impl Eq for Expr
+impl Show for Expr
+
+pub(all) enum LeftValue {
+  Variable(String)
+  FieldAccess(LeftValue, String)
+  ArrayAccess(LeftValue, Expr)
+}
+impl Eq for LeftValue
+impl Show for LeftValue
+
+pub(all) struct MatchArm {
+  pattern : Pattern
+  expr : Expr
+}
+impl Eq for MatchArm
+impl Show for MatchArm
+
+pub(all) enum Pattern {
+  NumberPattern(Int)
+  BoolPattern(Bool)
+  TuplePattern(Array[Pattern])
+  WildcardPattern
+  VariablePattern(String)
+  EnumVariantPattern(String, String?, Array[Pattern])
+}
+impl Eq for Pattern
+impl Show for Pattern
+
+pub(all) struct Program {
+  declarations : Array[TopLevel]
+}
+impl Eq for Program
+impl Show for Program
+
+pub(all) enum Stmt {
+  LetStmt(Binding, Type?, Expr)
+  LetMutStmt(String, Type?, Expr)
+  LetTupleStmt(Array[Binding], Type?, Expr)
+  FnDeclStmt(String, Array[(String, Type?)], Type?, Expr)
+  AssignStmt(LeftValue, Expr)
+  WhileStmt(Expr, Array[Stmt])
+  ReturnStmt(Expr?)
+  ExprStmt(Expr)
+}
+impl Eq for Stmt
+impl Show for Stmt
+
+pub(all) struct StructField {
+  name : String
+  field_type : Type
+}
+impl Eq for StructField
+impl Show for StructField
+
+pub(all) enum TopLevel {
+  TopLetDecl(String, Type?, Expr)
+  TopLetWildcardDecl(Type?, Expr)
+  MainFnDecl(Expr)
+  TopFnDecl(String?, String, Array[(String, Type)], Type, Expr)
+  StructDecl(String, String?, Array[StructField])
+  EnumDecl(String, String?, Array[EnumVariant])
+}
+impl Eq for TopLevel
+impl Show for TopLevel
+
+pub(all) enum Type {
+  UnitType
+  BoolType
+  IntType
+  DoubleType
+  ArrayType(Type)
+  TupleType(Array[Type])
+  FunctionType(Array[Type], Type)
+  UserDefinedType(String)
+  GenericType(String, Type)
+}
+impl Eq for Type
+impl Show for Type
+
+pub(all) enum UnaryOperator {
+  Negate
+  Not
+}
+impl Eq for UnaryOperator
+impl Show for UnaryOperator
+
+// Type aliases
+
+// Traits
+

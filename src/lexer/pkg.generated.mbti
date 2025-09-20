@@ -1,0 +1,96 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/lexer"
+
+// Values
+fn tokenize(String) -> Array[TokenWithPos]
+
+// Errors
+
+// Types and methods
+pub struct Lexer {
+  input : String
+  mut position : Int
+  mut line : Int
+  mut column : Int
+}
+fn Lexer::new(String) -> Self
+fn Lexer::next_token(Self) -> TokenWithPos
+
+pub(all) struct Position {
+  line : Int
+  column : Int
+}
+impl Eq for Position
+impl Show for Position
+
+pub(all) enum Token {
+  True
+  False
+  Unit
+  Bool
+  Int
+  Double
+  Array
+  Function
+  Not
+  If
+  Else
+  Fn
+  Let
+  Mut
+  While
+  Return
+  Main
+  Struct
+  Enum
+  Match
+  Number(Int)
+  DoubleLiteral(Double)
+  Identifier(String)
+  UpperIdentifier(String)
+  Equal
+  NotEqual
+  GreaterEqual
+  LessEqual
+  Less
+  Greater
+  And
+  Or
+  Plus
+  Minus
+  Multiply
+  Divide
+  Modulo
+  Dot
+  Assign
+  LParen
+  RParen
+  LBracket
+  RBracket
+  LCurlyBracket
+  RCurlyBracket
+  Arrow
+  MatchArrow
+  Colon
+  DoubleColon
+  Semicolon
+  Comma
+  Exclamation
+  Wildcard
+  EOF
+  Unknown(Char)
+}
+impl Eq for Token
+impl Show for Token
+
+pub(all) struct TokenWithPos {
+  token : Token
+  pos : Position
+}
+impl Eq for TokenWithPos
+impl Show for TokenWithPos
+
+// Type aliases
+
+// Traits
+

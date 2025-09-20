@@ -1,0 +1,33 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "echozyr2001/m_moon/codegen"
+
+import(
+  "echozyr2001/m_moon/ast"
+)
+
+// Values
+fn generate_riscv_assembly(@ast.Program) -> String
+
+// Errors
+
+// Types and methods
+pub struct RiscVCodeGen {
+  mut output : String
+  mut label_counter : Int
+  mut stack_offset : Int
+  mut local_vars : Map[String, Int]
+  function_params : Map[String, Int]
+  mut current_return_label : String
+  mut current_function_name : String
+  current_inner_function_name : String
+  declared_capture_globals : Map[String, Bool]
+  mut closure_functions : String
+  closure_vars : Map[String, Bool]
+}
+fn RiscVCodeGen::generate_program(Self, @ast.Program) -> String
+fn RiscVCodeGen::new() -> Self
+
+// Type aliases
+
+// Traits
+
